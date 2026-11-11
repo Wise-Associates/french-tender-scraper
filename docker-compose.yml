@@ -1,0 +1,11 @@
+services:
+  scraper:
+    build: .
+    env_file: .env
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./data:/app/data        # SQLite database persists here
+      - ./sessions:/app/sessions # logged-in sessions persist here
+      - ./debug:/app/debug      # HTML dumps when DEBUG_SCRAPER=1
+    restart: unless-stopped
