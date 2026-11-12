@@ -1,7 +1,7 @@
 {
   "name": "french-tender-scraper",
   "version": "1.0.0",
-  "description": "NestJS scraper for French public tender platforms (Maximilien, AW Solutions, achatpublic.com, e-marchespublics.com, Bpifrance)",
+  "description": "NestJS scraper for French public tender platforms (Maximilien, AW Solutions, achatpublic.com, e-marchespublics.com, Bpifrance, Partenaire GC)",
   "author": "",
   "private": true,
   "license": "UNLICENSED",
@@ -10,9 +10,13 @@
     "start": "node dist/main.js",
     "start:dev": "nest start --watch",
     "start:prod": "node dist/main.js",
+    "login:session": "node dist/cli/login-session.js",
+    "ao:send": "node dist/cli/send-to-ao.js",
+    "test": "nest build && node --test \"dist/**/*.spec.js\"",
     "postinstall": "playwright install chromium"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "1.8.0",
     "@nestjs/common": "^10.4.4",
     "@nestjs/config": "^3.2.3",
     "@nestjs/core": "^10.4.4",
@@ -22,15 +26,26 @@
     "better-sqlite3": "^11.3.0",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.1",
+    "nodemailer": "10.1.7",
     "playwright": "^1.47.2",
     "reflect-metadata": "^0.2.2",
-    "rxjs": "^7.8.1"
+    "rxjs": "^7.8.1",
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@nestjs/cli": "^10.4.5",
     "@types/better-sqlite3": "^7.6.11",
     "@types/express": "^4.17.21",
     "@types/node": "^20.16.10",
+    "@types/nodemailer": "8.0.2",
     "typescript": "^5.6.3"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3"
+    ],
+    "ignoredBuiltDependencies": [
+      "@nestjs/core"
+    ]
   }
 }

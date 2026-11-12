@@ -1,0 +1,17 @@
+# Secrets and runtime data: provided at run time by env_file and the compose
+# volumes, and must never be baked into an image layer (sessions/*.json are
+# logged-in cookies, debug/ holds dumps of logged-in pages).
+.env
+.env.*
+!.env.example
+sessions/
+debug/
+data/
+
+# Rebuilt inside the image; the host copies (pnpm layout, host-built native
+# addons) would overwrite the container's own.
+node_modules/
+dist/
+
+.git/
+*.log

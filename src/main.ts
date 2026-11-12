@@ -6,6 +6,10 @@ import { AppModule } from './app.module';
 
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create(AppModule);
+  // On SIGTERM/SIGINT (docker stop, `nest start --watch` restarts, Ctrl+C) run
+  // the onModuleDestroy hooks — close the browser and the database — and exit.
+  // Playwright's own signal handlers are disabled for this (BrowserService).
+  app.enableShutdownHooks();
   app.setGlobalPrefix('api');
   app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
 

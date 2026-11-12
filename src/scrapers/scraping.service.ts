@@ -1,4 +1,5 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { ConflictException, Inject, Injectable, Logger } from '@nestjs/common';
+import { OfferAnalysisService } from '../analysis/offer-analysis.service';
 import { TendersService } from '../tenders/tenders.service';
 import { BaseScraper } from './base.scraper';
 import { ScrapeFilters, ScrapeResult, SiteKey, Tender } from './tender.types';
@@ -7,10 +8,12 @@ import { ScrapeFilters, ScrapeResult, SiteKey, Tender } from './tender.types';
 export class ScrapingService {
   private readonly logger = new Logger(ScrapingService.name);
   private readonly lastResults: ScrapeResult[] = [];
+  private running = false;
 
   constructor(
     @Inject('SCRAPERS') private readonly scrapers: BaseScraper[],
     private readonly tendersService: TendersService,
+    private readonly offerAnalysis: OfferAnalysisService,
   ) {}
 
   listScrapers(): { site: SiteKey; name: string; enabled: boolean }[] {
@@ -28,7 +31,21 @@ export class ScrapingService {
     if (targets.length === 0) {
       throw new Error('No scraper matched the requested sites (or all are disabled).');
     }
+    // One run at a time (scheduler + API): parallel runs share the per-site
+    // browser contexts — one run discarding an expired-session context would
+    // close it under the other — and would hit the sites twice.
+    if (this.running) {
+      throw new ConflictException('A scraping run is already in progress — retry when it has finished.');
+    }
+    this.running = true;
+    try {
+      return await this.runTargets(targets, filters);
+    } finally {
+      this.running = false;
+    }
+  }
 
+  private async runTargets(targets: BaseScraper[], filters: ScrapeFilters): Promise<ScrapeResult[]> {
     const results: ScrapeResult[] = [];
     for (const scraper of targets) {
       const started = Date.now();
@@ -36,12 +53,15 @@ export class ScrapingService {
         this.logger.log(`Scraping ${scraper.displayName}…`);
         const tenders: Tender[] = await scraper.scrape(filters);
         const { newCount } = await this.tendersService.ingest(tenders);
+        // After ingest, so the listing is stored even if the analysis fails.
+        const analysis = await this.offerAnalysis.analyzeNew(scraper, tenders);
         const result: ScrapeResult = {
           site: scraper.site,
           scrapedAt: new Date().toISOString(),
           durationMs: Date.now() - started,
           count: tenders.length,
           newCount,
+          ...(analysis && { analysis }),
         };
         results.push(result);
         this.logger.log(

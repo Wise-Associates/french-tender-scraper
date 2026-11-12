@@ -4,6 +4,11 @@ import { chromium, Browser, BrowserContext } from 'playwright';
 import { existsSync, mkdirSync } from 'fs';
 import { join } from 'path';
 
+/** Where a site's saved session lives. Shared with the manual-login command. */
+export function sessionFilePath(sessionsDir: string, site: string): string {
+  return join(sessionsDir, `${site}.json`);
+}
+
 /**
  * Owns the headless browser and one persistent BrowserContext per site.
  * Session cookies/localStorage are saved to disk (Playwright storageState)
@@ -24,10 +29,7 @@ export class BrowserService implements OnModuleDestroy {
     if (cached) return cached;
 
     const browser = await this.ensureBrowser();
-    const sessionPath = join(
-      this.config.get<string>('SESSIONS_DIR') ?? './sessions',
-      `${site}.json`,
-    );
+    const sessionPath = sessionFilePath(this.config.get<string>('SESSIONS_DIR') ?? './sessions', site);
 
     const context = await browser.newContext({
       locale: 'fr-FR',
@@ -49,15 +51,33 @@ export class BrowserService implements OnModuleDestroy {
     });
 
     this.contexts.set(site, context);
+    // Also fires when the browser crashes or is closed: forget the dead context
+    // so the next run relaunches the browser instead of failing with
+    // "Target page, context or browser has been closed".
+    context.on('close', () => {
+      if (this.contexts.get(site) === context) this.contexts.delete(site);
+    });
     return context;
+  }
+
+  /**
+   * Drops the cached context so the next run reloads the session file from
+   * disk — needed when the session is refreshed outside this process
+   * (manual login with `npm run login:session`).
+   */
+  async discardContext(site: string): Promise<void> {
+    const context = this.contexts.get(site);
+    this.contexts.delete(site);
+    // Logged, not thrown: the caller is about to report why the context was
+    // dropped, and a close failure (e.g. crashed browser) must not replace it.
+    await context
+      ?.close()
+      .catch((err: Error) => this.logger.warn(`Could not close the "${site}" browser context: ${err.message}`));
   }
 
   /** Persist cookies/localStorage so the next run skips the login flow. */
   async persistSession(site: string, context: BrowserContext): Promise<void> {
-    const sessionPath = join(
-      this.config.get<string>('SESSIONS_DIR') ?? './sessions',
-      `${site}.json`,
-    );
+    const sessionPath = sessionFilePath(this.config.get<string>('SESSIONS_DIR') ?? './sessions', site);
     await context.storageState({ path: sessionPath });
     this.logger.log(`Session saved for "${site}" -> ${sessionPath}`);
   }
@@ -68,6 +88,13 @@ export class BrowserService implements OnModuleDestroy {
     this.browser = await chromium.launch({
       headless,
       args: ['--disable-blink-features=AutomationControlled', '--no-sandbox'],
+      // Playwright's handlers close the browser on these signals but keep the
+      // process alive: a `nest start --watch` restart then left the old server
+      // running on the port with a dead browser. Shutdown is handled by Nest
+      // (enableShutdownHooks in main.ts → onModuleDestroy below).
+      handleSIGINT: false,
+      handleSIGTERM: false,
+      handleSIGHUP: false,
     });
     return this.browser;
   }

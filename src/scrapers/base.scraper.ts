@@ -1,11 +1,11 @@
-import { Logger } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Page } from 'playwright';
+import { Page, Response } from 'playwright';
 import { mkdirSync, writeFileSync } from 'fs';
 import { createHash } from 'crypto';
 import { join } from 'path';
 import { BrowserService } from './browser.service';
-import { ScrapeFilters, SiteKey, Tender } from './tender.types';
+import { OfferDetails, ScrapeFilters, SiteKey, Tender } from './tender.types';
 
 export interface ExtractOptions {
   /** Candidate CSS selectors for result rows (table mode). First match wins. */
@@ -17,6 +17,21 @@ export interface ExtractOptions {
   max: number;
 }
 
+/** Statuses where the same request may succeed a few seconds later. */
+const RETRYABLE_HTTP_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
+
+function describeHttpFailure(status: number, statusText: string, url: string): string {
+  const head = `HTTP ${status}${statusText ? ` ${statusText}` : ''} from ${url}`;
+  if (status === 401 || status === 403) {
+    return (
+      `${head}: the site refused access (typically bot protection, a country restriction ` +
+      'or an expired login session). This is not a selector problem.'
+    );
+  }
+  if (status === 429) return `${head}: the site is rate-limiting requests; lower the scraping frequency.`;
+  return head;
+}
+
 /**
  * Base class for all site scrapers.
  *
@@ -25,7 +40,13 @@ export interface ExtractOptions {
  * (table rows / card lists) with configurable CSS selectors — because these
  * platforms revamp their HTML regularly, selectors live in env vars so they
  * can be recalibrated without touching code.
+ *
+ * @Injectable() is required even though this class is abstract: subclasses
+ * inherit this constructor, and TypeScript only emits the constructor's
+ * parameter types (which Nest uses for injection) on a decorated class.
+ * Without it every scraper is built with `browser` and `config` undefined.
  */
+@Injectable()
 export abstract class BaseScraper {
   abstract readonly site: SiteKey;
   abstract readonly displayName: string;
@@ -45,6 +66,9 @@ export abstract class BaseScraper {
   protected abstract login(page: Page): Promise<void>;
 
   abstract scrape(filters: ScrapeFilters): Promise<Tender[]>;
+
+  /** Implemented by sites whose detail pages are analysed by Claude (see OfferAnalysisService). */
+  fetchDetails?(tenders: Tender[]): Promise<OfferDetails[]>;
 
   isEnabled(): boolean {
     const key = this.site.replace(/-/g, '').toUpperCase();
@@ -91,16 +115,33 @@ export abstract class BaseScraper {
 
   // ---------------------------------------------------------------- helpers
 
+  /**
+   * Navigates to `url`, retrying network errors and transient HTTP statuses.
+   * Any other HTTP error fails immediately: otherwise the error page would be
+   * parsed as a listing and reported as a selector problem, and re-requesting
+   * a page the site refuses (e.g. a bot-protection 403) is pointless.
+   */
   protected async gotoWithRetry(page: Page, url: string, retries = 3): Promise<void> {
     for (let attempt = 1; ; attempt += 1) {
+      let response: Response | null;
       try {
-        await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60_000 });
-        return;
+        response = await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60_000 });
       } catch (err) {
         if (attempt >= retries) throw err;
         this.logger.warn(`goto failed (attempt ${attempt}/${retries}) — retrying…`);
         await this.humanDelay(2_000 * attempt);
+        continue;
       }
+
+      // null means the navigation had no network response (same-document): nothing to check.
+      if (!response || response.ok()) return;
+
+      const status = response.status();
+      if (!RETRYABLE_HTTP_STATUSES.has(status) || attempt >= retries) {
+        throw new Error(describeHttpFailure(status, response.statusText(), url));
+      }
+      this.logger.warn(`HTTP ${status} from ${url} (attempt ${attempt}/${retries}) — retrying…`);
+      await this.humanDelay(2_000 * attempt);
     }
   }
 
@@ -130,9 +171,10 @@ export abstract class BaseScraper {
   protected async dumpDebug(page: Page, name: string): Promise<void> {
     if (this.config.get<string>('DEBUG_SCRAPER') !== '1') return;
     const dir = './debug';
-    mkdirSync(dir, { recursive: true });
+    // Owner-only: dumps of logged-in areas contain paid content and account details.
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
     const file = join(dir, `${this.site}-${name}-${Date.now()}.html`);
-    writeFileSync(file, await page.content(), 'utf-8');
+    writeFileSync(file, await page.content(), { encoding: 'utf-8', mode: 0o600 });
     this.logger.log(`Debug HTML saved: ${file}`);
   }
 
