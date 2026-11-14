@@ -90,5 +90,5 @@ function toIso(value: string): string | undefined {
 }
 
 function normalize(text: string): string {
-  return text.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+  return text.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
 }

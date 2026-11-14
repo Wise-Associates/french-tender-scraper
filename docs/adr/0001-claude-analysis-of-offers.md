@@ -19,6 +19,11 @@ offer, "data" in an infrastructure one).
   structured output validated with zod). Claude returns the matching
   categories — software development & SaaS, IT steering & agile, data & AI —
   and the key details (summary, skills, seniority, duration, start, remote).
+- A free keyword filter runs first (2026-11-14, `src/analysis/it-keywords.ts`):
+  offers whose title and mission text mention no IT, software development,
+  SaaS, agile/IT steering or data/AI term are recorded as `not_relevant`
+  (model `keyword-filter`) without calling Claude. The list favours recall;
+  `ANALYSIS_MAX_PER_RUN` caps the Claude calls among the offers that pass.
 - Results go to a separate `tender_analyses` table (additive, no change to
   `tenders`). Details are stored for **relevant offers only**; other offers
   keep just their outcome so they are never sent again. Refusals are stored

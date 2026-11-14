@@ -159,6 +159,15 @@ Infrastructure, network, cloud, cybersecurity, support and non-IT missions are
 deliberately **not** matched. The list and its wording live in
 `src/analysis/offer-analysis.ts` (`OFFER_CATEGORIES`).
 
+Before Claude, a **free keyword filter** (`src/analysis/it-keywords.ts`) reads
+the title and mission text: an offer mentioning none of the IT, software
+development, SaaS, agile/IT steering or data/AI terms of the list is set aside
+without calling Claude (recorded as `not_relevant`, model `keyword-filter`).
+The list favours recall — Claude makes the precise decision. After changing
+it, delete the `tender_analyses` rows whose `model` is `keyword-filter` so
+those offers are checked again. Measured on 2026-11-14: 5 of 27 open offers
+set aside (support, network, accounting…), all correctly.
+
 - **Relevant** offers get summary, skills, seniority, duration, start date,
   remote work and the mission text stored in `tender_analyses`.
 - **Not relevant** offers keep only the outcome (no details) — this prevents
@@ -172,7 +181,8 @@ deliberately **not** matched. The list and its wording live in
   the batch at once; 3 API errors in a row stop it too.
 
 Setup: set `ANTHROPIC_API_KEY` in `.env` (and optionally `ANALYSIS_MAX_PER_RUN`,
-default 40 offers per run). Without a key, offers are still scraped and the run
+default 40: Claude calls per run, among the offers that passed the keyword
+filter; `0` runs the filter only). Up to 40 detail pages are read per run. Without a key, offers are still scraped and the run
 reports `"analysis": {"error": "ANTHROPIC_API_KEY is not set…"}`.
 
 ```bash

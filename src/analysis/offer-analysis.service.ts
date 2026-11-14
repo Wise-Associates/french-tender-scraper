@@ -4,16 +4,23 @@ import { BaseScraper } from '../scrapers/base.scraper';
 import { AnalysisSummary, OfferDetails, Tender } from '../scrapers/tender.types';
 import { TendersService } from '../tenders/tenders.service';
 import { ANALYSIS_MODEL, ClaudeAnalyzer, ClaudeUnavailableError } from './claude-analyzer.service';
+import { matchedItKeywords } from './it-keywords';
 import { AnalysisOutcome, maskAnalysis, maskContactDetails, parseMaxPerRun } from './offer-analysis';
 
 /** Failures tied to an offer (unusable page or answer) before it is set aside. */
 export const MAX_ATTEMPTS_PER_OFFER = 3;
 /** Consecutive API errors (server errors, timeouts after the SDK's retries) before the batch stops. */
 const MAX_CONSECUTIVE_API_ERRORS = 3;
+/** Detail pages read per run: free, but each one is a request to the site. */
+export const MAX_DETAIL_PAGES_PER_RUN = 40;
+/** `model` recorded for offers the keyword filter set aside without calling Claude. */
+export const KEYWORD_FILTER_MODEL = 'keyword-filter';
 
 /**
- * After a scrape: reads the detail page of each offer not analysed yet and has
- * Claude classify it. Each offer is analysed once. Failures tied to the offer
+ * After a scrape: reads the detail page of each offer not analysed yet, sets
+ * aside for free the offers with no IT keyword (it-keywords.ts) and has Claude
+ * classify the others, at most ANALYSIS_MAX_PER_RUN per run. Each offer is
+ * analysed once. Failures tied to the offer
  * count as attempts and the offer is set aside after MAX_ATTEMPTS_PER_OFFER;
  * service failures (API or site down) count nothing and are retried next run.
  * Offer texts are never logged.
@@ -37,7 +44,7 @@ export class OfferAnalysisService {
   async analyzeNew(scraper: BaseScraper, tenders: Tender[]): Promise<AnalysisSummary | undefined> {
     if (!scraper.fetchDetails) return undefined;
     const summary: AnalysisSummary = {
-      analyzed: 0, relevant: 0, notRelevant: 0, refused: 0, failed: 0, abandoned: 0, remaining: 0,
+      analyzed: 0, relevant: 0, notRelevant: 0, refused: 0, filteredOut: 0, failed: 0, abandoned: 0, remaining: 0,
       inputTokens: 0, outputTokens: 0,
     };
     if (!this.analyzer.enabled) {
@@ -47,11 +54,13 @@ export class OfferAnalysisService {
     }
 
     const pending = this.tenders.withoutAnalysis(scraper.site, tenders, MAX_ATTEMPTS_PER_OFFER);
-    const batch = pending.slice(0, this.maxPerRun);
+    const batch = pending.slice(0, MAX_DETAIL_PAGES_PER_RUN);
     summary.remaining = pending.length - batch.length;
     if (batch.length === 0) return summary;
 
-    this.logger.log(`Analysing ${batch.length} new ${scraper.displayName} offer(s) with ${ANALYSIS_MODEL}…`);
+    this.logger.log(
+      `Reading ${batch.length} new ${scraper.displayName} offer(s); up to ${this.maxPerRun} go to ${ANALYSIS_MODEL}…`,
+    );
     let details: OfferDetails[];
     try {
       details = await scraper.fetchDetails(batch);
@@ -63,6 +72,7 @@ export class OfferAnalysisService {
     }
 
     let consecutiveApiErrors = 0;
+    let claudeCalls = 0;
     for (const [index, detail] of details.entries()) {
       if ('error' in detail) {
         if (detail.offerProblem) this.recordFailure(detail.tender, detail.error, summary);
@@ -72,6 +82,20 @@ export class OfferAnalysisService {
         }
         continue;
       }
+      const keywords = matchedItKeywords(`${detail.tender.title}\n${detail.text}`);
+      if (keywords.length === 0) {
+        this.tenders.saveAnalysis(detail.tender, { kind: 'not_relevant' }, KEYWORD_FILTER_MODEL, null);
+        summary.filteredOut += 1;
+        this.logger.log(`${idOf(detail.tender)}: no IT keyword, not sent to Claude`);
+        continue;
+      }
+      if (claudeCalls >= this.maxPerRun) {
+        // Passed the filter but over this run's Claude budget: next run.
+        summary.remaining += 1;
+        continue;
+      }
+      claudeCalls += 1;
+      this.logger.log(`${idOf(detail.tender)}: IT keywords (${keywords.slice(0, 5).join(', ')}) → Claude`);
       try {
         const { result, model, inputTokens, outputTokens } = await this.analyzer.analyze(detail.tender, detail.text);
         consecutiveApiErrors = 0;
@@ -99,7 +123,8 @@ export class OfferAnalysisService {
               : undefined;
         if (stop) {
           // Same failure for the remaining offers: stop and retry them all next run.
-          summary.failed += details.length - index;
+          summary.failed += 1;
+          summary.remaining += details.length - index - 1;
           summary.error = `Analysis stopped: ${stop}`;
           this.logger.error(summary.error);
           return summary;
@@ -110,7 +135,7 @@ export class OfferAnalysisService {
     }
     this.logger.log(
       `${scraper.displayName}: ${summary.relevant} relevant, ${summary.notRelevant} not relevant, ` +
-        `${summary.refused} declined, ${summary.failed} failed ` +
+        `${summary.refused} declined, ${summary.filteredOut} without IT keyword, ${summary.failed} failed ` +
         `(${summary.inputTokens} input / ${summary.outputTokens} output tokens)`,
     );
     return summary;

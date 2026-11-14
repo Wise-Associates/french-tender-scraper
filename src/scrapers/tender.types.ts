@@ -38,6 +38,8 @@ export interface ScrapeResult {
   error?: string;
   /** Claude analysis of this run's offers, for sites that provide detail pages. */
   analysis?: AnalysisSummary;
+  /** Relevant offers emailed to the AO inbox after this run (sites with analysis only). */
+  aoEmails?: { sent: number; refused: number; error?: string };
 }
 
 /**
@@ -55,11 +57,13 @@ export interface AnalysisSummary {
   relevant: number;
   notRelevant: number;
   refused: number;
+  /** Offers with no IT keyword, set aside without calling Claude (analysis/it-keywords.ts). */
+  filteredOut: number;
   /** Offers whose details or analysis failed this run; retried on the next run unless abandoned. */
   failed: number;
   /** Offers set aside this run after repeated failures (see tender_analysis_failures). */
   abandoned: number;
-  /** Offers left for the next run because of ANALYSIS_MAX_PER_RUN. */
+  /** Offers left for the next run (detail pages or Claude calls over this run's limits, batch stopped). */
   remaining: number;
   inputTokens: number;
   outputTokens: number;

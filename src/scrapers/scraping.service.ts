@@ -1,5 +1,8 @@
 import { ConflictException, Inject, Injectable, Logger } from '@nestjs/common';
 import { OfferAnalysisService } from '../analysis/offer-analysis.service';
+import { parseMailConfig } from '../ao-mail/ao-mailer';
+import { MAX_EMAILS_PER_SEND, sendRelevantOffers } from '../ao-mail/send-offers';
+import { TendersRepository } from '../tenders/tenders.repository';
 import { TendersService } from '../tenders/tenders.service';
 import { BaseScraper } from './base.scraper';
 import { ScrapeFilters, ScrapeResult, SiteKey, Tender } from './tender.types';
@@ -14,6 +17,7 @@ export class ScrapingService {
     @Inject('SCRAPERS') private readonly scrapers: BaseScraper[],
     private readonly tendersService: TendersService,
     private readonly offerAnalysis: OfferAnalysisService,
+    private readonly repository: TendersRepository,
   ) {}
 
   listScrapers(): { site: SiteKey; name: string; enabled: boolean }[] {
@@ -55,6 +59,7 @@ export class ScrapingService {
         const { newCount } = await this.tendersService.ingest(tenders);
         // After ingest, so the listing is stored even if the analysis fails.
         const analysis = await this.offerAnalysis.analyzeNew(scraper, tenders);
+        const aoEmails = analysis ? await this.emailRelevantOffers(scraper.site) : undefined;
         const result: ScrapeResult = {
           site: scraper.site,
           scrapedAt: new Date().toISOString(),
@@ -62,6 +67,7 @@ export class ScrapingService {
           count: tenders.length,
           newCount,
           ...(analysis && { analysis }),
+          ...(aoEmails && { aoEmails }),
         };
         results.push(result);
         this.logger.log(
@@ -86,5 +92,27 @@ export class ScrapingService {
     this.lastResults.unshift(...results);
     this.lastResults.splice(50);
     return results;
+  }
+
+  /**
+   * Sends the site's relevant offers not emailed yet to the AO inbox. Reported
+   * in the run result, never a scrape failure: the offers stay stored and the
+   * next run or `npm run ao:send` sends them.
+   */
+  private async emailRelevantOffers(site: string): Promise<{ sent: number; refused: number; error?: string }> {
+    try {
+      return await sendRelevantOffers(
+        this.repository,
+        parseMailConfig(process.env),
+        site,
+        MAX_EMAILS_PER_SEND,
+        process.env.DATA_DIR || './data',
+        (message) => this.logger.log(message),
+      );
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      this.logger.error(`AO inbox emails not sent: ${error}`);
+      return { sent: 0, refused: 0, error };
+    }
   }
 }

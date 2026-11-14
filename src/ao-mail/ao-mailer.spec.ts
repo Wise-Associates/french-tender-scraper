@@ -24,9 +24,17 @@ describe('parseMailConfig', () => {
   });
 
   it('refuses a sender outside the AO inbox domain, even behind a quoted display name', () => {
-    assert.throws(() => parseMailConfig({ ...valid, MAIL_FROM: 'veille@other.test' }), /MAIL_FROM.*same domain/);
-    assert.throws(() => parseMailConfig({ ...valid, MAIL_FROM: '"Veille <x@acme.test>" <x@other.test>' }), /MAIL_FROM/);
-    assert.throws(() => parseMailConfig({ ...valid, MAIL_FROM: 'a@acme.test, b@acme.test' }), /MAIL_FROM/);
+    assert.throws(
+      () => parseMailConfig({ ...valid, MAIL_FROM: 'veille@other.test' }),
+      (err: Error) => /MAIL_FROM: is on @other\.test but OFFERS_TO is on @acme\.test/.test(err.message) && !/veille@/.test(err.message),
+    );
+    assert.throws(() => parseMailConfig({ ...valid, MAIL_FROM: '"Veille <x@acme.test>" <x@other.test>' }), /@other\.test/);
+    assert.throws(() => parseMailConfig({ ...valid, MAIL_FROM: 'a@acme.test, b@acme.test' }), /exactly one address, found 2/);
+    assert.throws(() => parseMailConfig({ ...valid, MAIL_FROM: 'Veille' }), /exactly one address, found/);
+  });
+
+  it('accepts a display name containing a comma, read as one address like nodemailer does', () => {
+    assert.ok(parseMailConfig({ ...valid, MAIL_FROM: 'Wise Associates, Veille <veille@acme.test>' }));
   });
 
   it('accepts a sender written in capitals', () => {

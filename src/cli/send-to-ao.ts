@@ -11,17 +11,17 @@
  * offer is recorded after the SMTP server accepted it, so a crash in between
  * re-sends it next time (MyBestConsultant merges the duplicate).
  */
-import { closeSync, existsSync, mkdirSync, openSync, rmSync } from 'fs';
-import { join } from 'path';
+import { existsSync } from 'fs';
 import { ConfigService } from '@nestjs/config';
-import { AoMailer, isMessageRejection, parseMailConfig } from '../ao-mail/ao-mailer';
+import { parseMailConfig } from '../ao-mail/ao-mailer';
 import { renderOfferEmail } from '../ao-mail/offer-email';
+import { MAX_EMAILS_PER_SEND, sendRelevantOffers } from '../ao-mail/send-offers';
 import { TendersRepository } from '../tenders/tenders.repository';
 
 const SITE = 'partenaire-gc';
 
 function parseArgs(argv: string[]): { limit: number; dryRun: boolean } {
-  const usage = 'Usage: npm run ao:send -- --limit <1-50> [--dry-run]';
+  const usage = `Usage: npm run ao:send -- --limit <1-${MAX_EMAILS_PER_SEND}> [--dry-run]`;
   let limit: number | undefined;
   let dryRun = false;
   for (let i = 0; i < argv.length; i += 1) {
@@ -30,23 +30,8 @@ function parseArgs(argv: string[]): { limit: number; dryRun: boolean } {
     else throw new Error(`Unknown argument "${argv[i]}". ${usage}`);
   }
   // Explicit and bounded: a missing --limit must not send every relevant offer at once.
-  if (limit === undefined || !Number.isInteger(limit) || limit < 1 || limit > 50) throw new Error(usage);
+  if (limit === undefined || !Number.isInteger(limit) || limit < 1 || limit > MAX_EMAILS_PER_SEND) throw new Error(usage);
   return { limit, dryRun };
-}
-
-/** One sending run at a time: two runs would pick and send the same offers. */
-function acquireLock(dataDir: string): () => void {
-  mkdirSync(dataDir, { recursive: true });
-  const path = join(dataDir, 'ao-send.lock');
-  let fd: number;
-  try {
-    fd = openSync(path, 'wx');
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
-    throw new Error(`Another ao:send is running. If none is (a previous run crashed), delete ${path}.`);
-  }
-  closeSync(fd);
-  return () => rmSync(path, { force: true });
 }
 
 async function main(): Promise<void> {
@@ -73,34 +58,14 @@ async function main(): Promise<void> {
       return;
     }
 
-    const releaseLock = acquireLock(process.env.DATA_DIR || './data');
-    const mailer = new AoMailer(parseMailConfig(process.env));
-    let refused = 0;
-    try {
-      // Selected again under the lock: another run may have sent some meanwhile.
-      for (const offer of repository.relevantNotEmailed(SITE, new Date().toISOString(), limit)) {
-        const id = `${offer.site}:${offer.external_id}`;
-        let messageId: string;
-        try {
-          ({ messageId } = await mailer.sendOffer(renderOfferEmail(offer)));
-        } catch (err) {
-          // A message refused for its content must not block the next offers.
-          if (!isMessageRejection(err)) throw err;
-          refused += 1;
-          console.error(`Refused by the SMTP server, retried next time: ${id} — ${(err as Error).message}`);
-          continue;
-        }
-        try {
-          repository.markEmailed(offer.site, offer.external_id, messageId);
-        } catch (err) {
-          throw new Error(`${id} was sent but could not be recorded, so it may be sent again: ${(err as Error).message}`);
-        }
-        console.log(`Sent to OFFERS_TO: ${offer.title} (${id})`);
-      }
-    } finally {
-      mailer.close();
-      releaseLock();
-    }
+    const { refused } = await sendRelevantOffers(
+      repository,
+      parseMailConfig(process.env),
+      SITE,
+      limit,
+      process.env.DATA_DIR || './data',
+      (message) => console.log(message),
+    );
     if (refused > 0) process.exitCode = 1;
   } finally {
     repository.onModuleDestroy();

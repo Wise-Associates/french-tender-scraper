@@ -46,7 +46,11 @@ export type AnalysisResult = AnalysisOutcome | { kind: 'unusable'; reason: strin
 
 export const DEFAULT_MAX_PER_RUN = 40;
 
-/** ANALYSIS_MAX_PER_RUN: unset or empty means the default; anything but a whole number ≥ 0 is rejected. */
+/**
+ * ANALYSIS_MAX_PER_RUN: Claude calls per run (offers that passed the keyword
+ * filter); 0 runs the free keyword filter only. Unset or empty means the
+ * default; anything but a whole number ≥ 0 is rejected.
+ */
 export function parseMaxPerRun(raw: string | undefined): number {
   if (raw === undefined || raw.trim() === '') return DEFAULT_MAX_PER_RUN;
   const value = Number(raw);

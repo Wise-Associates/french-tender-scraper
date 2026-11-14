@@ -25,17 +25,30 @@ const MailConfigSchema = z
     MAIL_FROM: z.string().min(1),
     OFFERS_TO: z.email(),
   })
-  .refine(
-    (c) => {
-      const from = senderAddress(c.MAIL_FROM);
-      return from !== null && domainOf(from) === domainOf(c.OFFERS_TO);
-    },
-    {
-      // MyBestConsultant takes any other sender for the client of the offer (its ADR 0004).
-      message: 'must be a single address on the same domain as OFFERS_TO',
-      path: ['MAIL_FROM'],
-    },
-  );
+  // MyBestConsultant takes any other sender for the client of the offer (its
+  // ADR 0004). The messages show domains only, never full addresses.
+  .superRefine((c, ctx) => {
+    // Read with nodemailer's own parser (a quoted display name such as
+    // '"x <a@ours>" <b@other>' must not pass); strict: one entry, with an address.
+    const addresses = addressparser(c.MAIL_FROM, { flatten: true });
+    if (addresses.length !== 1 || !addresses[0].address) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['MAIL_FROM'],
+        message: `must contain exactly one address, found ${addresses.length} (expected form: MAIL_FROM="Name <address>")`,
+      });
+      return;
+    }
+    const from = domainOf(addresses[0].address);
+    const to = domainOf(c.OFFERS_TO);
+    if (from !== to) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['MAIL_FROM'],
+        message: `is on @${from} but OFFERS_TO is on @${to}: the sender must be on the inbox's domain`,
+      });
+    }
+  });
 export type MailConfig = z.infer<typeof MailConfigSchema>;
 
 /** Validates the mail settings; the message names the variables to fix, never their values. */
@@ -46,16 +59,6 @@ export function parseMailConfig(env: Record<string, string | undefined>): MailCo
     throw new Error(`Mail settings missing or invalid in .env — ${problems}`);
   }
   return parsed.data;
-}
-
-/**
- * The address nodemailer will actually send from (« Nom <adresse> » or a bare
- * address), read with nodemailer's own parser: a quoted display name such as
- * '"x <a@ours>" <b@other>' must not pass the domain check. null unless exactly one.
- */
-function senderAddress(from: string): string | null {
-  const addresses = addressparser(from, { flatten: true });
-  return addresses.length === 1 && addresses[0].address ? addresses[0].address : null;
 }
 
 function withoutEmpty(env: Record<string, string | undefined>): Record<string, string> {

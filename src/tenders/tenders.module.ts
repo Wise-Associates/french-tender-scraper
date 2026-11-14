@@ -6,6 +6,6 @@ import { TendersController } from './tenders.controller';
 @Module({
   controllers: [TendersController],
   providers: [TendersRepository, TendersService],
-  exports: [TendersService],
+  exports: [TendersService, TendersRepository],
 })
 export class TendersModule {}
