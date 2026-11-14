@@ -64,11 +64,8 @@ because it needs its native addon; without it the app crashes at startup with
 "Could not locate the bindings file". If you installed before that entry existed,
 run `pnpm rebuild better-sqlite3`.
 
-Or with Docker (recommended — all Playwright system deps included):
-
-```bash
-docker compose up --build
-```
+Production runs on the VPS in Docker (Chromium included, scheduled runs, no
+published port): see [docs/deployment-vps.md](docs/deployment-vps.md).
 
 ## Usage
 
@@ -99,8 +96,8 @@ curl  localhost:3000/api/scrape/last-runs
 
 Swagger UI: http://localhost:3000/api/docs
 
-Scheduling: set `SCRAPE_INTERVAL_MINUTES` in `.env` (default: every 6 h,
-`0` disables). Between platforms the orchestrator waits 5 s, and each
+Scheduling: set `SCRAPE_CRON` in `.env`, a cron expression in Paris time
+(e.g. `0 8,12,16,20 * * *` for 4 runs a day; empty disables). Between platforms the orchestrator waits 5 s, and each
 interaction has a randomized delay (`SCRAPE_MIN_DELAY_MS`).
 
 Only one run happens at a time: a run requested (API or schedule) while another

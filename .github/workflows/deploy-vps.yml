@@ -1,0 +1,103 @@
+# Deployment to the VPS (ADR 0003, docs/deployment-vps.md). Same workflow as the veille's.
+#
+# Started by hand only: Actions tab → « Deploy to the VPS » → Run workflow, branch main. Checks the code, builds the
+# image, sends it to the server and replaces the container (deploy/tender-scraper-deploy.sh). Rollback: on the server,
+# « sudo -u deploy tender-scraper-deploy rollback <commit> » (images of the last 5 versions kept).
+#
+# Two jobs: « verify » runs the repository's code and dependencies without any secret; « deploy » holds the SSH key and
+# runs no repository code on GitHub's machine (the build happens inside a Docker container).
+
+name: Deploy to the VPS
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-vps
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    outputs:
+      commit: ${{ steps.commit.outputs.sha }}
+    steps:
+      - name: Checks
+        env:
+          VPS_HOST: ${{ vars.VPS_HOST }}
+        run: |
+          if [[ $GITHUB_REF != refs/heads/main ]]; then
+            echo "::error::Run this workflow from the main branch (chosen: $GITHUB_REF_NAME)."
+            exit 1
+          fi
+          if [[ -z $VPS_HOST ]]; then
+            echo "::error::Repository variable VPS_HOST missing: server not configured yet (docs/deployment-vps.md, part 3). Nothing was changed."
+            exit 1
+          fi
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Commit to deploy
+        id: commit
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+
+      # --ignore-scripts: no dependency script runs (no browser download); only the SQLite addon is built.
+      - name: Install
+        run: |
+          npm install --global pnpm@10.17.1
+          pnpm install --frozen-lockfile --ignore-scripts
+          pnpm rebuild better-sqlite3
+      - name: Verification (types and tests)
+        run: |
+          npx tsc --noEmit -p .
+          pnpm test
+
+  deploy:
+    needs: verify
+    runs-on: ubuntu-24.04
+    # SSH key: environment « production », limited to the main branch (docs/deployment-vps.md, part 3).
+    environment: production
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.verify.outputs.commit }}
+          persist-credentials: false
+
+      - name: Image
+        env:
+          COMMIT: ${{ needs.verify.outputs.commit }}
+        run: docker build --tag "french-tender-scraper:$COMMIT" .
+
+      - name: Send to the server and replace the container
+        env:
+          COMMIT: ${{ needs.verify.outputs.commit }}
+          VPS_HOST: ${{ vars.VPS_HOST }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_SSH_KNOWN_HOSTS: ${{ secrets.VPS_SSH_KNOWN_HOSTS }}
+        # The key can only run tender-scraper-deploy on the server (command= in authorized_keys). The server's
+        # fingerprint is checked (known_hosts).
+        run: |
+          if [[ -z $VPS_SSH_KEY || -z $VPS_SSH_KNOWN_HOSTS ]]; then
+            echo "::error::Secrets VPS_SSH_KEY or VPS_SSH_KNOWN_HOSTS missing from the production environment (docs/deployment-vps.md, part 3). Nothing was deployed."
+            exit 1
+          fi
+          install -m 700 -d ~/.ssh
+          (umask 077 && printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/deploy_key)
+          printf '%s\n' "$VPS_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          docker save "french-tender-scraper:$COMMIT" | gzip -1 |
+            ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o ServerAliveInterval=30 \
+              "deploy@$VPS_HOST" deploy "$COMMIT"

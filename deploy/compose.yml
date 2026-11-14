@@ -1,0 +1,47 @@
+# Scraper container on the VPS (ADR 0003), started by deploy/tender-scraper-deploy.sh, which gives the image and the
+# server paths (IMAGE_TAG, SCRAPER_ENV_FILE, SCRAPER_DATA): do not run docker compose by hand on this file.
+# On MyBestConsultant's server, next to its containers and the veille's, sharing nothing with them.
+# Guide: docs/deployment-vps.md.
+
+services:
+  scraper:
+    image: french-tender-scraper:${IMAGE_TAG:?IMAGE_TAG missing}
+    container_name: tender-scraper
+    restart: unless-stopped
+    # tini: forwards the stop signal to Node (which closes Chromium and SQLite) and reaps Chromium's processes.
+    init: true
+    user: "10001:10001"
+    # Secrets and settings (Claude key, SMTP, schedule): a server file, never in the repository or the image.
+    env_file: ${SCRAPER_ENV_FILE:?SCRAPER_ENV_FILE missing}
+    environment:
+      DATA_DIR: /data/db
+      SESSIONS_DIR: /data/sessions
+      # HTML dumps would be written into the read-only image.
+      DEBUG_SCRAPER: "0"
+    # SQLite database (db/), the Partenaire GC session (sessions/) and the AO sending lock.
+    volumes:
+      - ${SCRAPER_DATA:?SCRAPER_DATA missing}:/data
+    # No "ports:": the API has no authentication and must stay inside the container (Docker would also bypass ufw).
+    # Runs are scheduled (SCRAPE_CRON) or started with « tender-scraper-deploy run ».
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m,mode=1777
+    # Chromium's shared memory: Docker's 64 MB default makes pages crash.
+    shm_size: 1gb
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 1536m
+    pids_limit: 512
+    stop_grace_period: 60s
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/scrape/scrapers').then((r) => process.exit(r.ok ? 0 : 1), () => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"

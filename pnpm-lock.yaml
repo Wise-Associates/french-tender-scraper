@@ -38,6 +38,9 @@ importers:
       class-validator:
         specifier: ^0.14.1
         version: 0.14.4
+      cron:
+        specifier: 3.2.1
+        version: 3.2.1
       nodemailer:
         specifier: 10.1.7
         version: 10.1.7
