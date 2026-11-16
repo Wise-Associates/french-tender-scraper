@@ -204,11 +204,13 @@ When runs report « Partenaire GC session missing or expired », on **your machi
 
 ```bash
 npm run build && npm run login:session -- partenaire-gc     # log in in the window, press Enter
-ssh <admin>@<ip> 'sudo -u deploy tender-scraper-deploy session' < sessions/partenaire-gc.json
+scp sessions/partenaire-gc.json <admin>@<ip>:
+ssh -t <admin>@<ip> 'sudo -u deploy tender-scraper-deploy session < partenaire-gc.json; rm -f partenaire-gc.json'
 ```
 
-(If sudo asks for a password, copy the file first: `scp sessions/partenaire-gc.json <admin>@<ip>:` then on the
-server `sudo -u deploy tender-scraper-deploy session < partenaire-gc.json && rm partenaire-gc.json`.)
+Two steps because sudo asks for your password: `-t` gives it a terminal, which a single
+`ssh … < file` cannot (its input is the file). The copy is deleted even if the command fails.
+Before the first deployment, `session` stops with « no version deployed » (it needs the app's image).
 
 The server only accepts a file holding partenaire-gc.com cookies, writes it readable by the container only,
 and the next run uses it (no restart needed). The file is a login: never leave a copy elsewhere.
