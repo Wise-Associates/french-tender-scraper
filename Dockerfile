@@ -12,6 +12,7 @@ WORKDIR /app
 RUN npm install --global pnpm@10.17.1
 COPY package.json pnpm-lock.yaml ./
 # --ignore-scripts: no browser download (the base image has Chromium); the only native addon is built explicitly.
+# The image has no compiler: better-sqlite3 must ship a prebuilt binary for the image's Node (26 in 1.65.0, ABI 147).
 RUN pnpm install --frozen-lockfile --ignore-scripts && pnpm rebuild better-sqlite3
 COPY tsconfig.json nest-cli.json ./
 COPY src ./src
