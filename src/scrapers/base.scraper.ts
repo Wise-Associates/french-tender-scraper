@@ -17,6 +17,13 @@ export interface ExtractOptions {
   max: number;
 }
 
+/**
+ * The site's saved session is missing or expired and only a manual login
+ * (`npm run login:session -- <site>`) fixes it. Stops the site's run and
+ * emails the operator (ScrapingService, ADR 0005).
+ */
+export class SessionMissingError extends Error {}
+
 /** Statuses where the same request may succeed a few seconds later. */
 const RETRYABLE_HTTP_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
 

@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { AlertsModule } from '../alerts/alerts.module';
 import { AnalysisModule } from '../analysis/analysis.module';
 import { TendersModule } from '../tenders/tenders.module';
 import { BrowserService } from './browser.service';
@@ -23,7 +24,7 @@ const SCRAPER_PROVIDERS = [
 ];
 
 @Module({
-  imports: [TendersModule, AnalysisModule],
+  imports: [TendersModule, AnalysisModule, AlertsModule],
   controllers: [ScrapeController],
   providers: [
     BrowserService,

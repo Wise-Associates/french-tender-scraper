@@ -4,6 +4,7 @@ import { Tender } from '../scrapers/tender.types';
 import {
   buildOfferPrompt,
   DEFAULT_MAX_PER_RUN,
+  interpretOpenAiResponse,
   interpretResponse,
   maskAnalysis,
   maskContactDetails,
@@ -137,6 +138,45 @@ describe('interpretResponse', () => {
     const offSchema = interpretResponse({ stop_reason: 'end_turn', content: [answer({ ...analysis, categories: ['cloud'] })] });
     assert.equal(offSchema.kind, 'unusable');
     assert.doesNotMatch(offSchema.kind === 'unusable' ? offSchema.reason : '', /cloud/);
+  });
+});
+
+describe('interpretOpenAiResponse', () => {
+  const completion = (finish_reason: string | null, message: { content?: string | null; refusal?: string | null }) => ({
+    choices: [{ finish_reason, message }],
+  });
+
+  it('reads the JSON answer with the same rules as Claude', () => {
+    const result = interpretOpenAiResponse(completion('stop', { content: JSON.stringify({ ...analysis, categories: ['data_ia', 'data_ia'] }) }));
+    assert.deepEqual(result.kind === 'relevant' && result.analysis.categories, ['data_ia']);
+    assert.deepEqual(interpretOpenAiResponse(completion('stop', { content: JSON.stringify({ ...analysis, categories: [] }) })), {
+      kind: 'not_relevant',
+    });
+  });
+
+  it('records a refusal or a filtered answer once', () => {
+    assert.deepEqual(interpretOpenAiResponse(completion('stop', { content: null, refusal: 'I cannot help with that.' })), {
+      kind: 'refused',
+      category: null,
+    });
+    assert.deepEqual(interpretOpenAiResponse(completion('content_filter', { content: null })), {
+      kind: 'refused',
+      category: 'content_filter',
+    });
+  });
+
+  it('marks truncated, empty, non-JSON or off-schema answers as unusable', () => {
+    assert.deepEqual(interpretOpenAiResponse(completion('length', { content: '{"summ' })), {
+      kind: 'unusable',
+      reason: 'finish_reason "length"',
+    });
+    assert.deepEqual(interpretOpenAiResponse({ choices: [] }), { kind: 'unusable', reason: 'no choice in the answer' });
+    assert.deepEqual(interpretOpenAiResponse(completion('stop', { content: '' })), { kind: 'unusable', reason: 'no text in the answer' });
+    assert.deepEqual(interpretOpenAiResponse(completion('stop', { content: 'Voici' })), {
+      kind: 'unusable',
+      reason: 'the answer is not valid JSON',
+    });
+    assert.equal(interpretOpenAiResponse(completion('stop', { content: JSON.stringify({ ...analysis, categories: ['cloud'] }) })).kind, 'unusable');
   });
 });
 

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { explainSmtpError, isMessageRejection, parseMailConfig } from './ao-mailer';
+import { explainSmtpError, isMessageRejection, parseMailConfig, parseSmtpConfig } from './ao-mailer';
 
 // Fictitious settings.
 const valid = {
@@ -43,6 +43,21 @@ describe('parseMailConfig', () => {
 
   it('refuses ports other than 587 and 465', () => {
     assert.throws(() => parseMailConfig({ ...valid, SMTP_PORT: '25' }), /SMTP_PORT/);
+  });
+});
+
+describe('parseSmtpConfig (operator alerts)', () => {
+  it('needs no OFFERS_TO and accepts any sender domain', () => {
+    const { OFFERS_TO: _unused, ...smtp } = valid;
+    assert.equal(parseSmtpConfig({ ...smtp, MAIL_FROM: 'Veille <veille@other.test>' }).SMTP_PORT, 587);
+  });
+
+  it('still requires exactly one sender address and the SMTP settings, without printing values', () => {
+    assert.throws(() => parseSmtpConfig({ ...valid, MAIL_FROM: 'a@acme.test, b@acme.test' }), /exactly one address, found 2/);
+    assert.throws(
+      () => parseSmtpConfig({ ...valid, SMTP_HOST: '' }),
+      (err: Error) => /SMTP_HOST/.test(err.message) && !/not-a-real-password/.test(err.message),
+    );
   });
 });
 

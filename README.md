@@ -32,7 +32,8 @@ src/
 ├── main.ts / app.module.ts
 ├── cli/login-session.ts  # manual login for sites whose login form is not automated
 ├── tenders/            # SQLite storage (better-sqlite3), REST search API
-├── analysis/           # Claude analysis of offer details (classification + extraction)
+├── analysis/           # Claude analysis of offer details (classification + extraction), OpenAI fallback
+├── alerts/             # emails to the operator (expired session, Claude credit problem)
 └── scrapers/
     ├── browser.service.ts     # Playwright browser + per-site persistent sessions
     ├── base.scraper.ts        # login-once, delays/retries, debug dumps, extraction
@@ -125,7 +126,9 @@ not inside the Docker container; the container reads `./sessions` through its
 volume.
 
 When the session expires, runs fail with *"Partenaire GC session missing or
-expired"*: run the command again — no API restart needed.
+expired"*: run the command again — no API restart needed. With `ALERTS_TO`
+set, you are emailed when this happens, then reminded once a day until the
+session is renewed (see [Operator alerts](#operator-alerts)).
 
 What is scraped: the **"Consultations en cours"** listing of the subscriber area,
 every page of it. Per offer: title (profile sought), client (*enseigne —
@@ -193,6 +196,24 @@ curl 'localhost:3000/api/tenders?relevant=false'       # everything else
 > the paid subscriber area: keep port 3000 reachable from your machine only
 > (in Docker, publish it as `127.0.0.1:3000:3000`).
 
+### OpenAI fallback when Claude has a credit problem
+
+When Claude refuses a request for a credit problem — credits exhausted (400
+*"credit balance is too low"*), spend limit reached (400 *"reached your
+specified API usage limits"*, or 429 `enforced_spend_limit_reached`) or
+billing error (402) — and `OPENAI_API_KEY` is set, that offer and the rest of
+the run are analysed by OpenAI (`gpt-6-luna` by default, `OPENAI_MODEL` to
+change it) with the same prompt, categories and checks. The next run tries
+Claude first again. Other Claude errors (invalid key, outage…) do not switch
+to OpenAI. Without `OPENAI_API_KEY`, the batch stops as before and the offers
+wait for the next run.
+
+The run's `analysis` block then shows `claudeCreditProblem` (Claude's
+refusal) and `fallback: { "model": …, "answers": … }` (0 answers: OpenAI failed too), each offer stores the
+model that answered (`tender_analyses.model`), and the operator is emailed.
+`ANALYSIS_MAX_PER_RUN` counts Claude and OpenAI calls together. Rationale:
+[docs/adr/0004-openai-fallback-on-claude-credit-problem.md](docs/adr/0004-openai-fallback-on-claude-credit-problem.md).
+
 Each run's result includes an `analysis` block (counts and tokens used; at
 $2 / $10 per million input / output tokens, an offer costs about a cent).
 Emails and phone numbers (including obfuscated and foreign formats) are masked
@@ -200,6 +221,25 @@ before an offer is sent, in the stored text and in Claude's answers; person
 names are not detected. To re-analyse offers (e.g. after changing the categories), delete their
 rows from `tender_analyses`; the next run picks them up. Design rationale:
 [docs/adr/0001-claude-analysis-of-offers.md](docs/adr/0001-claude-analysis-of-offers.md).
+
+## Operator alerts
+
+Set `ALERTS_TO` to the address that should hear about problems only a person
+can fix:
+
+| Alert | Sent when | What to do |
+|---|---|---|
+| *Session Partenaire GC expirée* | a run finds the session missing or expired | `npm run login:session -- partenaire-gc`, then send it to the server ([deployment guide](docs/deployment-vps.md), part 6) |
+| *Crédits Claude* | Claude refuses for a credit problem (the subject says whether OpenAI took over) | top up the credits or raise the spend limit in the Claude Console |
+
+The first occurrence is emailed at once, then one reminder a day (at most
+every 20 hours) while the problem lasts; once a run works again the alert is
+cleared, so the next occurrence is emailed at once. The state lives in the
+`operator_alerts` table. Emails use the `SMTP_*` and `MAIL_FROM` settings
+(any recipient domain). A failed email is logged and retried at the next run;
+it never fails the run. Empty `ALERTS_TO`: alerts are only logged. Set it
+where `SCRAPE_CRON` runs (the VPS): a local run with it set would email too.
+Rationale: [docs/adr/0005-operator-alert-emails.md](docs/adr/0005-operator-alert-emails.md).
 
 ## Sending relevant offers to MyBestConsultant's AO inbox
 

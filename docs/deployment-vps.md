@@ -122,12 +122,15 @@ EMARCHESPUBLICS_ENABLED='false'
 BPIFRANCE_ENABLED='false'
 ANTHROPIC_API_KEY='<Anthropic key>'
 ANALYSIS_MAX_PER_RUN='40'
+OPENAI_API_KEY='<OpenAI key, or empty: no fallback>'
+OPENAI_MODEL=''
 SMTP_HOST='<same as the veille>'
 SMTP_PORT='587'
 SMTP_USER='<…@wise-associates.fr>'
 SMTP_PASSWORD='<password of that mailbox>'
 MAIL_FROM='Veille Partenaire GC <…@wise-associates.fr>'
 OFFERS_TO='ao@wise-associates.fr'
+ALERTS_TO='<your address>'
 ```
 
 - `SCRAPE_CRON`: Paris time; `0 8,12,16,20 * * *` = 4 runs a day, `0 8,14 * * *` = 2. A run still going when
@@ -135,6 +138,9 @@ OFFERS_TO='ao@wise-associates.fr'
 - `SMTP_PORT='587'`: Hetzner blocks outgoing ports 25 and 465.
 - Do not set `DATA_DIR`, `SESSIONS_DIR` or `DEBUG_SCRAPER` (fixed by `deploy/compose.yml`).
 - Every other site is disabled: only Partenaire GC is meant to run here.
+- `ALERTS_TO`: who is emailed when the Partenaire GC session expires or Claude has a credit problem (README,
+  « Operator alerts »). An invalid address stops the startup (previous version put back).
+- `OPENAI_API_KEY`: used only while Claude refuses for a credit problem (ADR 0004).
 
 ### 2.5 SSH key for GitHub Actions
 
@@ -200,7 +206,8 @@ Backups: `/opt/french-tender-scraper/data/db/tenders.db` (SQLite; copy it with t
 
 ## 6. Partenaire GC session (first deploy, then about every 3 weeks)
 
-When runs report « Partenaire GC session missing or expired », on **your machine**:
+When runs report « Partenaire GC session missing or expired » — with `ALERTS_TO` set you get an email
+« Session Partenaire GC expirée », then a reminder each day — on **your machine**:
 
 ```bash
 npm run build && npm run login:session -- partenaire-gc     # log in in the window, press Enter

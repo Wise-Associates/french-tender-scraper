@@ -157,7 +157,37 @@ export class TendersRepository implements OnModuleDestroy {
         sent_at     TEXT NOT NULL DEFAULT (datetime('now')),
         PRIMARY KEY (site, external_id)
       );
+
+      -- Operator alerts in progress (expired session, Claude credits): when
+      -- the last email was sent, so a reminder goes out at most once a day.
+      -- The row is deleted once the problem is gone (ADR 0005).
+      CREATE TABLE IF NOT EXISTS operator_alerts (
+        kind         TEXT PRIMARY KEY,
+        last_sent_at TEXT NOT NULL  -- ISO 8601
+      );
     `);
+  }
+
+  /** When the alert of this kind was last emailed (ISO 8601), or null if it is not in progress. */
+  alertLastSentAt(kind: string): string | null {
+    const row = this.db.prepare('SELECT last_sent_at FROM operator_alerts WHERE kind = ?').get(kind) as
+      | { last_sent_at: string }
+      | undefined;
+    return row?.last_sent_at ?? null;
+  }
+
+  markAlertSent(kind: string, sentAt: string): void {
+    this.db
+      .prepare(
+        `INSERT INTO operator_alerts (kind, last_sent_at) VALUES (?, ?)
+         ON CONFLICT(kind) DO UPDATE SET last_sent_at = excluded.last_sent_at`,
+      )
+      .run(kind, sentAt);
+  }
+
+  /** The problem is gone: the next occurrence is emailed at once. */
+  clearAlert(kind: string): void {
+    this.db.prepare('DELETE FROM operator_alerts WHERE kind = ?').run(kind);
   }
 
   /**
