@@ -143,7 +143,36 @@ export function interpretResponse(response: ClaudeResponse): AnalysisResult {
   }
   const text = [...response.content].reverse().find((block) => block.type === 'text')?.text;
   if (!text) return { kind: 'unusable', reason: 'no text in the answer' };
+  return parseAnalysisText(text);
+}
 
+/** The fields of an OpenAI Chat Completions response that decide the result. */
+export interface OpenAiCompletion {
+  choices: ReadonlyArray<{
+    finish_reason: string | null;
+    message: { content?: string | null; refusal?: string | null };
+  }>;
+}
+
+/**
+ * Reads the OpenAI fallback's answer (ADR 0004) with the same rules as
+ * Claude's: a refusal or a filtered answer is final, a truncated or invalid
+ * answer is "unusable".
+ */
+export function interpretOpenAiResponse(completion: OpenAiCompletion): AnalysisResult {
+  const choice = completion.choices[0];
+  if (!choice) return { kind: 'unusable', reason: 'no choice in the answer' };
+  if (choice.message.refusal) return { kind: 'refused', category: null };
+  if (choice.finish_reason === 'content_filter') return { kind: 'refused', category: 'content_filter' };
+  if (choice.finish_reason !== 'stop') {
+    return { kind: 'unusable', reason: `finish_reason "${choice.finish_reason}"` };
+  }
+  if (!choice.message.content) return { kind: 'unusable', reason: 'no text in the answer' };
+  return parseAnalysisText(choice.message.content);
+}
+
+/** The JSON answer of either model, validated against OfferAnalysisSchema. */
+function parseAnalysisText(text: string): AnalysisResult {
   let json: unknown;
   try {
     json = JSON.parse(text);

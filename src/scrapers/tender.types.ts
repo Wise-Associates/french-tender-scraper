@@ -65,8 +65,16 @@ export interface AnalysisSummary {
   abandoned: number;
   /** Offers left for the next run (detail pages or Claude calls over this run's limits, batch stopped). */
   remaining: number;
+  /** Claude's and the OpenAI fallback's tokens added together (their prices differ). */
   inputTokens: number;
   outputTokens: number;
+  /** Claude refused a request for lack of credits (or billing, spend limit) this run: its message. */
+  claudeCreditProblem?: string;
+  /**
+   * Set when the OpenAI fallback was tried this run, after Claude's credit
+   * problem (ADR 0004): `answers` counts the answers it gave (0: it failed too).
+   */
+  fallback?: { model: string; answers: number };
   /** Why the analysis stopped before the end of the batch, or was not run. */
   error?: string;
 }

@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { Page } from 'playwright';
-import { BaseScraper } from './base.scraper';
+import { BaseScraper, SessionMissingError } from './base.scraper';
 import { matchesKeywords, PARTENAIRE_GC_ORIGIN, PartenaireGcRow, toPartenaireGcTender } from './partenaire-gc.listing';
 import { OfferDetails, ScrapeFilters, Tender } from './tender.types';
 
@@ -12,9 +12,6 @@ const MAX_PAGES = 20;
 const MISSION_TEXT_SELECTOR = '.field--name-field-body-prive';
 /** Far above real offers; guards the Claude bill against a malformed page. */
 const MAX_MISSION_TEXT_LENGTH = 20_000;
-
-/** The saved session is missing or expired: only a manual login fixes it. */
-export class SessionMissingError extends Error {}
 
 /** The offer's detail page cannot be analysed as it is (counts as a failed attempt). */
 class OfferContentError extends Error {}

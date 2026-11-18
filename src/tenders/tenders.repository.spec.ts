@@ -149,3 +149,22 @@ describe('TendersRepository — database created before the Claude analysis', ()
     }
   });
 });
+
+describe('TendersRepository — operator alerts', () => {
+  it('records when an alert was last emailed and forgets it once resolved', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tenders-alerts-'));
+    const repository = new TendersRepository({ get: (key: string) => (key === 'DATA_DIR' ? dir : undefined) } as ConfigService);
+    try {
+      assert.equal(repository.alertLastSentAt('session:partenaire-gc'), null);
+      repository.markAlertSent('session:partenaire-gc', '2026-11-18T07:00:00.000Z');
+      repository.markAlertSent('session:partenaire-gc', '2026-11-19T07:00:00.000Z');
+      assert.equal(repository.alertLastSentAt('session:partenaire-gc'), '2026-11-19T07:00:00.000Z');
+      assert.equal(repository.alertLastSentAt('claude-credits'), null);
+      repository.clearAlert('session:partenaire-gc');
+      assert.equal(repository.alertLastSentAt('session:partenaire-gc'), null);
+    } finally {
+      repository.onModuleDestroy();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});

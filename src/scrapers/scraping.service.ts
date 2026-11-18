@@ -1,11 +1,13 @@
 import { ConflictException, Inject, Injectable, Logger } from '@nestjs/common';
+import { CLAUDE_CREDITS_ALERT, claudeCreditsAlert, sessionAlertKind, sessionExpiredAlert } from '../alerts/operator-alerts';
+import { OperatorAlertsService } from '../alerts/operator-alerts.service';
 import { OfferAnalysisService } from '../analysis/offer-analysis.service';
 import { parseMailConfig } from '../ao-mail/ao-mailer';
 import { MAX_EMAILS_PER_SEND, sendRelevantOffers } from '../ao-mail/send-offers';
 import { TendersRepository } from '../tenders/tenders.repository';
 import { TendersService } from '../tenders/tenders.service';
-import { BaseScraper } from './base.scraper';
-import { ScrapeFilters, ScrapeResult, SiteKey, Tender } from './tender.types';
+import { BaseScraper, SessionMissingError } from './base.scraper';
+import { AnalysisSummary, ScrapeFilters, ScrapeResult, SiteKey, Tender } from './tender.types';
 
 @Injectable()
 export class ScrapingService {
@@ -18,6 +20,7 @@ export class ScrapingService {
     private readonly tendersService: TendersService,
     private readonly offerAnalysis: OfferAnalysisService,
     private readonly repository: TendersRepository,
+    private readonly alerts: OperatorAlertsService,
   ) {}
 
   listScrapers(): { site: SiteKey; name: string; enabled: boolean }[] {
@@ -59,6 +62,10 @@ export class ScrapingService {
         const { newCount } = await this.tendersService.ingest(tenders);
         // After ingest, so the listing is stored even if the analysis fails.
         const analysis = await this.offerAnalysis.analyzeNew(scraper, tenders);
+        // Listing and detail pages were read: the site's session (if any) works.
+        // Not earlier: an expiry between the two would clear and re-send the alert every run.
+        this.alerts.resolve(sessionAlertKind(scraper.site));
+        if (analysis) await this.reportClaudeCredits(analysis);
         const aoEmails = analysis ? await this.emailRelevantOffers(scraper.site) : undefined;
         const result: ScrapeResult = {
           site: scraper.site,
@@ -76,6 +83,10 @@ export class ScrapingService {
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
         this.logger.error(`${scraper.displayName} failed: ${message}`);
+        if (err instanceof SessionMissingError) {
+          const now = new Date();
+          await this.alerts.raise(sessionExpiredAlert(scraper.site, scraper.displayName, now), now);
+        }
         results.push({
           site: scraper.site,
           scrapedAt: new Date().toISOString(),
@@ -92,6 +103,17 @@ export class ScrapingService {
     this.lastResults.unshift(...results);
     this.lastResults.splice(50);
     return results;
+  }
+
+  /** Emails the operator while Claude refuses for a credit problem; clears the alert once Claude answers again. */
+  private async reportClaudeCredits(analysis: AnalysisSummary): Promise<void> {
+    if (analysis.claudeCreditProblem !== undefined) {
+      const now = new Date();
+      await this.alerts.raise(claudeCreditsAlert(analysis.claudeCreditProblem, analysis.fallback, analysis.error, now), now);
+    } else if (analysis.analyzed > 0) {
+      // No credit problem this run, so every analysis came from Claude.
+      this.alerts.resolve(CLAUDE_CREDITS_ALERT);
+    }
   }
 
   /**

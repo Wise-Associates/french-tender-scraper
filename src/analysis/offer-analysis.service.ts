@@ -1,11 +1,13 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { BaseScraper } from '../scrapers/base.scraper';
+import { BaseScraper, SessionMissingError } from '../scrapers/base.scraper';
 import { AnalysisSummary, OfferDetails, Tender } from '../scrapers/tender.types';
 import { TendersService } from '../tenders/tenders.service';
-import { ANALYSIS_MODEL, ClaudeAnalyzer, ClaudeUnavailableError } from './claude-analyzer.service';
+import { ANALYSIS_MODEL, ClaudeAnalyzer } from './claude-analyzer.service';
 import { matchedItKeywords } from './it-keywords';
+import { AnalyzerUnavailableError, ClaudeOutOfCreditsError, ModelAnalysis } from './model-analysis';
 import { AnalysisOutcome, maskAnalysis, maskContactDetails, parseMaxPerRun } from './offer-analysis';
+import { OpenAiAnalyzer } from './openai-analyzer.service';
 
 /** Failures tied to an offer (unusable page or answer) before it is set aside. */
 export const MAX_ATTEMPTS_PER_OFFER = 3;
@@ -20,7 +22,8 @@ export const KEYWORD_FILTER_MODEL = 'keyword-filter';
  * After a scrape: reads the detail page of each offer not analysed yet, sets
  * aside for free the offers with no IT keyword (it-keywords.ts) and has Claude
  * classify the others, at most ANALYSIS_MAX_PER_RUN per run. Each offer is
- * analysed once. Failures tied to the offer
+ * analysed once. When Claude refuses for a credit problem, the rest of the
+ * run goes to the OpenAI fallback if configured (ADR 0004). Failures tied to the offer
  * count as attempts and the offer is set aside after MAX_ATTEMPTS_PER_OFFER;
  * service failures (API or site down) count nothing and are retried next run.
  * Offer texts are never logged.
@@ -31,7 +34,8 @@ export class OfferAnalysisService {
   private readonly maxPerRun: number;
 
   constructor(
-    private readonly analyzer: ClaudeAnalyzer,
+    private readonly claude: ClaudeAnalyzer,
+    private readonly openai: OpenAiAnalyzer,
     private readonly tenders: TendersService,
     config: ConfigService,
   ) {
@@ -47,7 +51,7 @@ export class OfferAnalysisService {
       analyzed: 0, relevant: 0, notRelevant: 0, refused: 0, filteredOut: 0, failed: 0, abandoned: 0, remaining: 0,
       inputTokens: 0, outputTokens: 0,
     };
-    if (!this.analyzer.enabled) {
+    if (!this.claude.enabled) {
       summary.error = 'ANTHROPIC_API_KEY is not set: offers were not analysed';
       this.logger.warn(summary.error);
       return summary;
@@ -65,6 +69,8 @@ export class OfferAnalysisService {
     try {
       details = await scraper.fetchDetails(batch);
     } catch (err) {
+      // Stops the site's run so the operator is told to log in again (ScrapingService).
+      if (err instanceof SessionMissingError) throw err;
       summary.failed = batch.length;
       summary.error = `Detail pages not read: ${message(err)}`;
       this.logger.error(summary.error);
@@ -97,12 +103,12 @@ export class OfferAnalysisService {
       claudeCalls += 1;
       this.logger.log(`${idOf(detail.tender)}: IT keywords (${keywords.slice(0, 5).join(', ')}) → Claude`);
       try {
-        const { result, model, inputTokens, outputTokens } = await this.analyzer.analyze(detail.tender, detail.text);
+        const { result, model, inputTokens, outputTokens } = await this.analyzeOffer(detail.tender, detail.text, summary);
         consecutiveApiErrors = 0;
         summary.inputTokens += inputTokens;
         summary.outputTokens += outputTokens;
         if (result.kind === 'unusable') {
-          this.recordFailure(detail.tender, `Claude answer unusable: ${result.reason}`, summary);
+          this.recordFailure(detail.tender, `${model} answer unusable: ${result.reason}`, summary);
           continue;
         }
         this.save(detail.tender, result, model, detail.text);
@@ -111,12 +117,12 @@ export class OfferAnalysisService {
         else if (result.kind === 'not_relevant') summary.notRelevant += 1;
         else {
           summary.refused += 1;
-          this.logger.warn(`${idOf(detail.tender)}: Claude declined to analyse it (${result.category ?? 'no category'})`);
+          this.logger.warn(`${idOf(detail.tender)}: ${model} declined to analyse it (${result.category ?? 'no category'})`);
         }
       } catch (err) {
         consecutiveApiErrors += 1;
         const stop =
-          err instanceof ClaudeUnavailableError
+          err instanceof AnalyzerUnavailableError
             ? err.message
             : consecutiveApiErrors >= MAX_CONSECUTIVE_API_ERRORS
               ? `${consecutiveApiErrors} API errors in a row, last: ${message(err)}`
@@ -136,9 +142,34 @@ export class OfferAnalysisService {
     this.logger.log(
       `${scraper.displayName}: ${summary.relevant} relevant, ${summary.notRelevant} not relevant, ` +
         `${summary.refused} declined, ${summary.filteredOut} without IT keyword, ${summary.failed} failed ` +
-        `(${summary.inputTokens} input / ${summary.outputTokens} output tokens)`,
+        `(${summary.inputTokens} input / ${summary.outputTokens} output tokens` +
+        `${summary.fallback ? `, ${summary.fallback.answers} answer(s) from ${summary.fallback.model} after Claude's credit problem` : ''})`,
     );
     return summary;
+  }
+
+  /**
+   * Claude first. Once Claude refuses for a credit problem, the rest of the run
+   * goes to OpenAI when OPENAI_API_KEY is set, and the batch stops otherwise.
+   * The next run tries Claude again, so topping up the credits is enough to
+   * come back to it.
+   */
+  private async analyzeOffer(tender: Tender, missionText: string, summary: AnalysisSummary): Promise<ModelAnalysis> {
+    if (summary.claudeCreditProblem === undefined) {
+      try {
+        return await this.claude.analyze(tender, missionText);
+      } catch (err) {
+        if (!(err instanceof ClaudeOutOfCreditsError)) throw err;
+        summary.claudeCreditProblem = err.message;
+        if (!this.openai.enabled) throw err;
+        this.logger.error(`${err.message} — the rest of this run goes to OpenAI ${this.openai.model}`);
+      }
+    }
+    // Set before the call so a failing fallback still shows it was tried (answers: 0).
+    summary.fallback ??= { model: this.openai.model, answers: 0 };
+    const analysis = await this.openai.analyze(tender, missionText);
+    summary.fallback.answers += 1;
+    return analysis;
   }
 
   private save(tender: Tender, outcome: AnalysisOutcome, model: string, missionText: string): void {

@@ -15,31 +15,48 @@ export const SOURCE_ID = 'partenaire-gc';
 
 const domainOf = (address: string) => address.slice(address.lastIndexOf('@') + 1).toLowerCase();
 
-/** SMTP settings, same variable names as the veille so its values can be reused. */
-const MailConfigSchema = z
-  .object({
-    SMTP_HOST: z.string().min(1),
-    SMTP_PORT: z.coerce.number().int().refine((port) => port === 587 || port === 465, 'must be 587 or 465'),
-    SMTP_USER: z.string().min(1),
-    SMTP_PASSWORD: z.string().min(1),
-    MAIL_FROM: z.string().min(1),
-    OFFERS_TO: z.email(),
-  })
+/**
+ * SMTP settings, same variable names as the veille so its values can be
+ * reused. Shared by the AO inbox sending and the operator alerts (src/alerts).
+ */
+const SmtpFields = z.object({
+  SMTP_HOST: z.string().min(1),
+  SMTP_PORT: z.coerce.number().int().refine((port) => port === 587 || port === 465, 'must be 587 or 465'),
+  SMTP_USER: z.string().min(1),
+  SMTP_PASSWORD: z.string().min(1),
+  MAIL_FROM: z.string().min(1),
+});
+export type SmtpConfig = z.infer<typeof SmtpFields>;
+
+/**
+ * The address of MAIL_FROM, read with nodemailer's own parser (a quoted
+ * display name such as '"x <a@ours>" <b@other>' must not pass); strict: one
+ * entry, with an address. Undefined after reporting the issue otherwise.
+ */
+function senderAddress(mailFrom: string, ctx: z.RefinementCtx): string | undefined {
+  const addresses = addressparser(mailFrom, { flatten: true });
+  if (addresses.length !== 1 || !addresses[0].address) {
+    ctx.addIssue({
+      code: 'custom',
+      path: ['MAIL_FROM'],
+      message: `must contain exactly one address, found ${addresses.length} (expected form: MAIL_FROM="Name <address>")`,
+    });
+    return undefined;
+  }
+  return addresses[0].address;
+}
+
+const SmtpConfigSchema = SmtpFields.superRefine((c, ctx) => {
+  senderAddress(c.MAIL_FROM, ctx);
+});
+
+const MailConfigSchema = SmtpFields.extend({ OFFERS_TO: z.email() })
   // MyBestConsultant takes any other sender for the client of the offer (its
   // ADR 0004). The messages show domains only, never full addresses.
   .superRefine((c, ctx) => {
-    // Read with nodemailer's own parser (a quoted display name such as
-    // '"x <a@ours>" <b@other>' must not pass); strict: one entry, with an address.
-    const addresses = addressparser(c.MAIL_FROM, { flatten: true });
-    if (addresses.length !== 1 || !addresses[0].address) {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['MAIL_FROM'],
-        message: `must contain exactly one address, found ${addresses.length} (expected form: MAIL_FROM="Name <address>")`,
-      });
-      return;
-    }
-    const from = domainOf(addresses[0].address);
+    const address = senderAddress(c.MAIL_FROM, ctx);
+    if (!address) return;
+    const from = domainOf(address);
     const to = domainOf(c.OFFERS_TO);
     if (from !== to) {
       ctx.addIssue({
@@ -51,14 +68,40 @@ const MailConfigSchema = z
   });
 export type MailConfig = z.infer<typeof MailConfigSchema>;
 
-/** Validates the mail settings; the message names the variables to fix, never their values. */
+/** Validates the AO inbox mail settings; the message names the variables to fix, never their values. */
 export function parseMailConfig(env: Record<string, string | undefined>): MailConfig {
-  const parsed = MailConfigSchema.safeParse({ SMTP_PORT: '587', ...withoutEmpty(env) });
+  return parseSettings(MailConfigSchema, env);
+}
+
+/** Validates the SMTP settings alone (operator alerts), with the same messages. */
+export function parseSmtpConfig(env: Record<string, string | undefined>): SmtpConfig {
+  return parseSettings(SmtpConfigSchema, env);
+}
+
+function parseSettings<T>(schema: z.ZodType<T>, env: Record<string, string | undefined>): T {
+  const parsed = schema.safeParse({ SMTP_PORT: '587', ...withoutEmpty(env) });
   if (!parsed.success) {
     const problems = parsed.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`).join('; ');
     throw new Error(`Mail settings missing or invalid in .env — ${problems}`);
   }
   return parsed.data;
+}
+
+/**
+ * Connection settings: 465 is TLS from the start; otherwise STARTTLS is
+ * required, so the password never travels in clear.
+ */
+export function smtpTransportOptions(config: SmtpConfig) {
+  return {
+    host: config.SMTP_HOST,
+    port: config.SMTP_PORT,
+    secure: config.SMTP_PORT === 465,
+    requireTLS: config.SMTP_PORT !== 465,
+    auth: { user: config.SMTP_USER, pass: config.SMTP_PASSWORD },
+    connectionTimeout: 30_000,
+    greetingTimeout: 30_000,
+    socketTimeout: 60_000,
+  };
 }
 
 function withoutEmpty(env: Record<string, string | undefined>): Record<string, string> {
@@ -71,21 +114,13 @@ export class AoMailer {
 
   constructor(private readonly config: MailConfig) {
     this.transport = nodemailer.createTransport({
-      host: config.SMTP_HOST,
-      port: config.SMTP_PORT,
-      // 465: TLS from the start; otherwise STARTTLS, required so the password never travels in clear.
-      secure: config.SMTP_PORT === 465,
-      requireTLS: config.SMTP_PORT !== 465,
-      auth: { user: config.SMTP_USER, pass: config.SMTP_PASSWORD },
+      ...smtpTransportOptions(config),
       pool: true,
       maxConnections: 1,
       // IONOS refuses more than 20 messages per connection (seen by the veille).
       maxMessages: 10,
       rateDelta: 1_000,
       rateLimit: 1,
-      connectionTimeout: 30_000,
-      greetingTimeout: 30_000,
-      socketTimeout: 60_000,
     });
   }
 
