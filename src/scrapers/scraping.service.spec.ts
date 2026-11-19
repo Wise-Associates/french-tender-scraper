@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it, mock } from 'node:test';
+import { MbcStatusReporter, SessionState } from '../alerts/mbc-status';
 import { OperatorAlert } from '../alerts/operator-alerts';
 import { OperatorAlertsService } from '../alerts/operator-alerts.service';
 import { OfferAnalysisService } from '../analysis/offer-analysis.service';
@@ -17,9 +18,21 @@ const summary = (fields: Partial<AnalysisSummary>): AnalysisSummary => ({
   ...fields,
 });
 
-function setup(options: { scrape?: () => Promise<[]>; analyzeNew?: () => Promise<AnalysisSummary | undefined> }) {
+function setup(options: {
+  scrape?: () => Promise<[]>;
+  analyzeNew?: () => Promise<AnalysisSummary | undefined>;
+  manualSession?: boolean;
+  mbcProblem?: string;
+}) {
   const raised: OperatorAlert[] = [];
   const resolved: string[] = [];
+  const reported: [string, SessionState][] = [];
+  const mbcStatus = {
+    report: async (site: string, state: SessionState) => {
+      reported.push([site, state]);
+      return options.mbcProblem;
+    },
+  } as unknown as MbcStatusReporter;
   const alerts = {
     raise: async (alert: OperatorAlert) => void raised.push(alert),
     resolve: (kind: string) => void resolved.push(kind),
@@ -28,6 +41,7 @@ function setup(options: { scrape?: () => Promise<[]>; analyzeNew?: () => Promise
     site: 'partenaire-gc',
     displayName: 'Partenaire GC',
     isEnabled: () => true,
+    manualSession: options.manualSession ?? true,
     scrape: options.scrape ?? (async () => []),
   } as unknown as BaseScraper;
   const service = new ScrapingService(
@@ -36,8 +50,9 @@ function setup(options: { scrape?: () => Promise<[]>; analyzeNew?: () => Promise
     { analyzeNew: options.analyzeNew ?? (async () => undefined) } as unknown as OfferAnalysisService,
     { relevantNotEmailed: () => [] } as unknown as TendersRepository,
     alerts,
+    mbcStatus,
   );
-  return { service, raised, resolved };
+  return { service, raised, resolved, reported };
 }
 
 /** Runs the scrape without waiting for the 5-second politeness gap between sites. */
@@ -60,26 +75,45 @@ async function run(service: ScrapingService): Promise<ScrapeResult[]> {
 const expired = new SessionMissingError('Partenaire GC session missing or expired');
 
 describe('ScrapingService — operator alerts', () => {
-  it('raises the session alert when the listing needs a login', async () => {
-    const { service, raised, resolved } = setup({ scrape: () => Promise.reject(expired) });
+  it('raises the session alert and tells MyBestConsultant when the listing needs a login', async () => {
+    const { service, raised, resolved, reported } = setup({ scrape: () => Promise.reject(expired) });
     const [result] = await run(service);
     assert.match(result.error ?? '', /session missing or expired/);
     assert.deepEqual(raised.map((a) => a.kind), ['session:partenaire-gc']);
-    assert.deepEqual(resolved, []);
+    assert.deepEqual(resolved, ['mbc-status'], 'the state got through; the session alert stays');
+    assert.deepEqual(reported, [['partenaire-gc', 'session_expired']]);
   });
 
   it('raises it, without clearing it first, when the session expires on the detail pages', async () => {
-    const { service, raised, resolved } = setup({ analyzeNew: () => Promise.reject(expired) });
+    const { service, raised, resolved, reported } = setup({ analyzeNew: () => Promise.reject(expired) });
     await run(service);
     assert.deepEqual(raised.map((a) => a.kind), ['session:partenaire-gc']);
-    assert.deepEqual(resolved, [], 'clearing it would re-send the alert at every run');
+    assert.ok(!resolved.includes('session:partenaire-gc'), 'clearing it would re-send the alert at every run');
+    assert.deepEqual(reported, [['partenaire-gc', 'session_expired']], 'never "ok" first');
   });
 
-  it('clears the session alert after a run that read the site', async () => {
-    const { service, raised, resolved } = setup({});
+  it('clears the session alert and tells MyBestConsultant after a run that read the site', async () => {
+    const { service, raised, resolved, reported } = setup({});
     await run(service);
     assert.deepEqual(raised, []);
-    assert.deepEqual(resolved, ['session:partenaire-gc']);
+    assert.deepEqual(resolved, ['session:partenaire-gc', 'mbc-status']);
+    assert.deepEqual(reported, [['partenaire-gc', 'ok']]);
+  });
+
+  it('emails the operator when MyBestConsultant refuses the state, since its banner would stay as it was', async () => {
+    const { service, raised, resolved } = setup({ mbcProblem: 'HTTP 401 {"error":"Non autorisé"}' });
+    await run(service);
+    assert.deepEqual(raised.map((a) => a.kind), ['mbc-status']);
+    assert.match(raised[0].text, /HTTP 401/);
+    assert.ok(!resolved.includes('mbc-status'));
+  });
+
+  it('reports nothing to MyBestConsultant for a site without a manual session, even when it needs a login', async () => {
+    const { service, reported } = setup({ manualSession: false });
+    await run(service);
+    const expiredElsewhere = setup({ manualSession: false, scrape: () => Promise.reject(expired) });
+    await run(expiredElsewhere.service);
+    assert.deepEqual([...reported, ...expiredElsewhere.reported], [], 'a banner nothing would ever clear');
   });
 
   it('raises the credits alert when Claude had a credit problem', async () => {
@@ -102,9 +136,10 @@ describe('ScrapingService — operator alerts', () => {
     assert.ok(!nothingAnalysed.resolved.includes('claude-credits'));
   });
 
-  it('raises nothing for other failures', async () => {
-    const { service, raised } = setup({ scrape: () => Promise.reject(new Error('HTTP 503 from partenaire-gc.com')) });
+  it('raises nothing for other failures, and keeps the last state in MyBestConsultant', async () => {
+    const { service, raised, reported } = setup({ scrape: () => Promise.reject(new Error('HTTP 503 from partenaire-gc.com')) });
     await run(service);
     assert.deepEqual(raised, []);
+    assert.deepEqual(reported, []);
   });
 });

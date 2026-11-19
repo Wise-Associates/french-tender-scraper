@@ -42,6 +42,7 @@ export const PARTENAIRE_GC_LOGIN = {
 export class PartenaireGcScraper extends BaseScraper {
   readonly site = 'partenaire-gc' as const;
   readonly displayName = 'Partenaire GC (espace abonné)';
+  readonly manualSession = true;
   // withPage() checks the session on baseUrl: the subscriber area shows the
   // login form when the session is missing or expired.
   readonly baseUrl = PARTENAIRE_GC_LOGIN.url;

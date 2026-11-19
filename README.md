@@ -231,6 +231,15 @@ can fix:
 |---|---|---|
 | *Session Partenaire GC expirée* | a run finds the session missing or expired | `npm run login:session -- partenaire-gc`, then send it to the server ([deployment guide](docs/deployment-vps.md), part 6) |
 | *Crédits Claude* | Claude refuses for a credit problem (the subject says whether OpenAI took over) | top up the credits or raise the spend limit in the Claude Console |
+| *L'état de la session n'arrive plus dans MyBestConsultant* | MyBestConsultant refused or did not receive the session state (its banner no longer follows the real state) | the email names the answer: token, collection, clock or URL |
+
+The session state is also shown in MyBestConsultant: with `MBC_STATUS_URL`
+and `MBC_STATUS_TOKEN` set, each Partenaire GC run sends « valid » or
+« expired » to MyBestConsultant (`POST /api/scraper/status`), whose
+`/admin/candidats` page shows a red banner while the session is expired, until
+a run reads the site again. A run that fails for another reason (site down)
+sends nothing, so the last known state stays. Rationale:
+[docs/adr/0006-session-state-in-mybestconsultant.md](docs/adr/0006-session-state-in-mybestconsultant.md).
 
 The first occurrence is emailed at once, then one reminder a day (at most
 every 20 hours) while the problem lasts; once a run works again the alert is

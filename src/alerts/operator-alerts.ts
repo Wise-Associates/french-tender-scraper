@@ -2,9 +2,10 @@ import { z } from 'zod';
 import { SiteKey } from '../scrapers/tender.types';
 
 /** Problems only a person can fix, emailed to ALERTS_TO (ADR 0005). */
-export type AlertKind = `session:${SiteKey}` | 'claude-credits';
+export type AlertKind = `session:${SiteKey}` | 'claude-credits' | 'mbc-status';
 
 export const CLAUDE_CREDITS_ALERT: AlertKind = 'claude-credits';
+export const MBC_STATUS_ALERT: AlertKind = 'mbc-status';
 
 export function sessionAlertKind(site: SiteKey): AlertKind {
   return `session:${site}`;
@@ -123,4 +124,29 @@ function fallbackStatus(fallback: { model: string; answers: number } | undefined
     `${stopped ? `, puis l'analyse s'est arrêtée (${stopped})` : ''}. ` +
     "Chaque passage essaie d'abord Claude, qui reprend la main dès que les crédits sont rechargés."
   );
+}
+
+/**
+ * MyBestConsultant refused or did not receive the session state (ADR 0006):
+ * its /admin/candidats banner stays as it was, whatever the real state.
+ */
+export function mbcStatusAlert(siteName: string, problem: string, now: Date): OperatorAlert {
+  return {
+    kind: MBC_STATUS_ALERT,
+    subject: "Scraper AO : l'état de la session n'arrive plus dans MyBestConsultant",
+    text: [
+      'Bonjour,',
+      '',
+      `MyBestConsultant n'a pas accepté l'état de la session ${siteName} envoyé par le scraper`,
+      `(constaté le ${parisDate.format(now)}). Le bandeau de /admin/candidats ne suit donc plus l'état réel :`,
+      "il peut rester rouge alors que la session fonctionne, ou ne pas s'afficher alors qu'elle a expiré.",
+      `Réponse : ${problem}`,
+      '',
+      'À vérifier : 401 → MBC_STATUS_TOKEN du scraper différent de SCRAPER_STATUS_TOKEN de MyBestConsultant ;',
+      '503 → collection scraper_status ou APPWRITE_COLLECTION_SCRAPER_STATUS absente ; 400 → horloge du serveur ;',
+      'pas de réponse → MBC_STATUS_URL ou MyBestConsultant indisponible.',
+      '',
+      ...SIGNATURE,
+    ].join('\n'),
+  };
 }
