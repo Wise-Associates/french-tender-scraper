@@ -43,7 +43,13 @@ const RESPONSE_FORMAT = (() => {
 export function openAiError(status: number, body: unknown): Error {
   const parsed = z.object({ error: z.object({ message: z.string().optional(), code: z.string().nullish() }) }).safeParse(body);
   const detail = parsed.success ? `${parsed.data.error.code ?? ''} ${parsed.data.error.message ?? ''}`.trim().slice(0, 300) : '';
-  if (status === 401) return new AnalyzerUnavailableError('OpenAI API 401: OPENAI_API_KEY refused');
+  if (status === 401) {
+    // Seen in practice: the masked key copied from the dashboard list ("sk-proj-…abcd") instead of the full one.
+    return new AnalyzerUnavailableError(
+      'OpenAI API 401: OPENAI_API_KEY refused. Use the full key (starts with "sk-", no "...", shown only once ' +
+        'when created): create a new one if needed.',
+    );
+  }
   const message = `OpenAI API ${status}${detail ? `: ${detail}` : ''}`;
   return status >= 400 && status < 500 ? new AnalyzerUnavailableError(message) : new Error(message);
 }

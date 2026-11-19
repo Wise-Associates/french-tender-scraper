@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { claudeCreditsAlert, isReminderDue, parseAlertsTo, REMINDER_INTERVAL_MS, sessionExpiredAlert } from './operator-alerts';
+import { claudeCreditsAlert, isReminderDue, mbcStatusAlert, parseAlertsTo, REMINDER_INTERVAL_MS, sessionExpiredAlert } from './operator-alerts';
 
 const now = new Date('2026-11-18T07:00:00.000Z'); // 08:00 in Paris
 const hoursBefore = (hours: number) => new Date(now.getTime() - hours * 3_600_000).toISOString();
@@ -68,5 +68,14 @@ describe('claudeCreditsAlert', () => {
     assert.match(alert.subject, /arrêtée/);
     assert.match(alert.text, /gpt-6-luna\) a échoué aussi \(Analysis stopped: OpenAI API 401/);
     assert.doesNotMatch(alert.text, /a analysé/);
+  });
+});
+
+describe('mbcStatusAlert', () => {
+  it('says the banner no longer follows the real state, with the answer and what to check', () => {
+    const alert = mbcStatusAlert('Partenaire GC (espace abonné)', 'HTTP 401 {"error":"Non autorisé"}', now);
+    assert.equal(alert.kind, 'mbc-status');
+    assert.match(alert.text, /Réponse : HTTP 401/);
+    assert.match(alert.text, /SCRAPER_STATUS_TOKEN/);
   });
 });

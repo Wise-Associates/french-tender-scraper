@@ -1,5 +1,13 @@
 import { ConflictException, Inject, Injectable, Logger } from '@nestjs/common';
-import { CLAUDE_CREDITS_ALERT, claudeCreditsAlert, sessionAlertKind, sessionExpiredAlert } from '../alerts/operator-alerts';
+import {
+  CLAUDE_CREDITS_ALERT,
+  claudeCreditsAlert,
+  MBC_STATUS_ALERT,
+  mbcStatusAlert,
+  sessionAlertKind,
+  sessionExpiredAlert,
+} from '../alerts/operator-alerts';
+import { MbcStatusReporter, SessionState } from '../alerts/mbc-status';
 import { OperatorAlertsService } from '../alerts/operator-alerts.service';
 import { OfferAnalysisService } from '../analysis/offer-analysis.service';
 import { parseMailConfig } from '../ao-mail/ao-mailer';
@@ -21,6 +29,7 @@ export class ScrapingService {
     private readonly offerAnalysis: OfferAnalysisService,
     private readonly repository: TendersRepository,
     private readonly alerts: OperatorAlertsService,
+    private readonly mbcStatus: MbcStatusReporter,
   ) {}
 
   listScrapers(): { site: SiteKey; name: string; enabled: boolean }[] {
@@ -65,6 +74,7 @@ export class ScrapingService {
         // Listing and detail pages were read: the site's session (if any) works.
         // Not earlier: an expiry between the two would clear and re-send the alert every run.
         this.alerts.resolve(sessionAlertKind(scraper.site));
+        if (scraper.manualSession) await this.reportSession(scraper, 'ok', new Date());
         if (analysis) await this.reportClaudeCredits(analysis);
         const aoEmails = analysis ? await this.emailRelevantOffers(scraper.site) : undefined;
         const result: ScrapeResult = {
@@ -86,6 +96,9 @@ export class ScrapingService {
         if (err instanceof SessionMissingError) {
           const now = new Date();
           await this.alerts.raise(sessionExpiredAlert(scraper.site, scraper.displayName, now), now);
+          // Red banner on MyBestConsultant's /admin/candidats until a run reads the site again; only for sites that
+          // also report "ok", or the banner would never clear.
+          if (scraper.manualSession) await this.reportSession(scraper, 'session_expired', now);
         }
         results.push({
           site: scraper.site,
@@ -103,6 +116,16 @@ export class ScrapingService {
     this.lastResults.unshift(...results);
     this.lastResults.splice(50);
     return results;
+  }
+
+  /**
+   * Sends the session state to MyBestConsultant; if it does not get through,
+   * the operator is emailed, since the banner would stay as it was.
+   */
+  private async reportSession(scraper: BaseScraper, state: SessionState, now: Date): Promise<void> {
+    const problem = await this.mbcStatus.report(scraper.site, state, now);
+    if (problem === undefined) this.alerts.resolve(MBC_STATUS_ALERT);
+    else await this.alerts.raise(mbcStatusAlert(scraper.displayName, problem, now), now);
   }
 
   /** Emails the operator while Claude refuses for a credit problem; clears the alert once Claude answers again. */

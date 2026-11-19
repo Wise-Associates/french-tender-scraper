@@ -131,6 +131,8 @@ SMTP_PASSWORD='<password of that mailbox>'
 MAIL_FROM='Veille Partenaire GC <…@wise-associates.fr>'
 OFFERS_TO='ao@wise-associates.fr'
 ALERTS_TO='<your address>'
+MBC_STATUS_URL='https://<MyBestConsultant domain>/api/scraper/status'
+MBC_STATUS_TOKEN='<same value as SCRAPER_STATUS_TOKEN in /etc/mybestconsultant/app.env>'
 ```
 
 - `SCRAPE_CRON`: Paris time; `0 8,12,16,20 * * *` = 4 runs a day, `0 8,14 * * *` = 2. A run still going when
@@ -141,6 +143,10 @@ ALERTS_TO='<your address>'
 - `ALERTS_TO`: who is emailed when the Partenaire GC session expires or Claude has a credit problem (README,
   « Operator alerts »). An invalid address stops the startup (previous version put back).
 - `OPENAI_API_KEY`: used only while Claude refuses for a credit problem (ADR 0004).
+- `MBC_STATUS_URL` / `MBC_STATUS_TOKEN`: the Partenaire GC session state, shown as a red banner on MyBestConsultant's
+  `/admin/candidats` (ADR 0006). Set them once MyBestConsultant has the `scraper_status` collection and
+  `SCRAPER_STATUS_TOKEN` (its ADR 0048); before that, each run logs a refusal (401 or 503) and nothing else changes.
+  Invalid values stop the startup (previous version put back).
 
 ### 2.5 SSH key for GitHub Actions
 
@@ -195,7 +201,7 @@ sudo -u deploy tender-scraper-deploy status             # online version, contai
 sudo -u deploy tender-scraper-deploy run                # a scrape now (prints the result, a few minutes)
 sudo -u deploy tender-scraper-deploy restart            # after editing scraper.env
 sudo -u deploy tender-scraper-deploy rollback <commit>  # one of the 5 kept images
-docker logs --tail 100 tender-scraper                   # runs, analysis, emails
+sudo docker logs --tail 100 tender-scraper                   # runs, analysis, emails
 ```
 
 After a change to `deploy/tender-scraper-deploy.sh` on `main`, reinstall it (the deployment warns you):
@@ -207,7 +213,8 @@ Backups: `/opt/french-tender-scraper/data/db/tenders.db` (SQLite; copy it with t
 ## 6. Partenaire GC session (first deploy, then about every 3 weeks)
 
 When runs report « Partenaire GC session missing or expired » — with `ALERTS_TO` set you get an email
-« Session Partenaire GC expirée », then a reminder each day — on **your machine**:
+« Session Partenaire GC expirée », then a reminder each day, and MyBestConsultant's `/admin/candidats` shows a red
+banner until the next run that reads the site — on **your machine**:
 
 ```bash
 npm run build && npm run login:session -- partenaire-gc     # log in in the window, press Enter

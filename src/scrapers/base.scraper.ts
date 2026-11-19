@@ -58,6 +58,11 @@ export abstract class BaseScraper {
   abstract readonly site: SiteKey;
   abstract readonly displayName: string;
   abstract readonly baseUrl: string;
+  /**
+   * The login is done by hand (`npm run login:session`) and expires: the
+   * session state is reported to MyBestConsultant after each run (ADR 0006).
+   */
+  readonly manualSession: boolean = false;
 
   /** Set false for sites/areas that are publicly accessible. */
   protected requiresLogin = true;
