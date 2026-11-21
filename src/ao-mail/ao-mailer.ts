@@ -1,6 +1,7 @@
 import nodemailer, { Transporter } from 'nodemailer';
 import addressparser from 'nodemailer/lib/addressparser';
 import { z } from 'zod';
+import { EmailDocuments } from '../documents/read-documents';
 import { RenderedEmail } from './offer-email';
 
 /**
@@ -124,8 +125,8 @@ export class AoMailer {
     });
   }
 
-  /** Resolves once the SMTP server accepted the message for OFFERS_TO. */
-  async sendOffer(email: RenderedEmail): Promise<{ messageId: string }> {
+  /** Resolves once the SMTP server accepted the message for OFFERS_TO. `attachments`: the offer's documents (ADR 0007). */
+  async sendOffer(email: RenderedEmail, attachments: EmailDocuments['attachments'] = []): Promise<{ messageId: string }> {
     const info = await this.transport
       .sendMail({
         from: this.config.MAIL_FROM,
@@ -134,6 +135,7 @@ export class AoMailer {
         text: email.text,
         html: email.html,
         headers: { [VEILLE_HEADER]: 'scraping', [VEILLE_SOURCE_HEADER]: SOURCE_ID },
+        attachments: attachments.map(({ filename, content, contentType }) => ({ filename, content, contentType })),
       })
       .catch((error: unknown) => {
         throw explainSmtpError(error);

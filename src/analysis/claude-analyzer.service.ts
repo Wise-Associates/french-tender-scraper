@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { betaZodOutputFormat } from '@anthropic-ai/sdk/helpers/beta/zod';
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { DocumentText } from '../documents/offer-documents';
 import { Tender } from '../scrapers/tender.types';
 import { AnalyzerUnavailableError, ClaudeOutOfCreditsError, ModelAnalysis } from './model-analysis';
 import { ANALYSIS_SYSTEM_PROMPT, buildOfferPrompt, interpretResponse, OfferAnalysisSchema } from './offer-analysis';
@@ -54,7 +55,7 @@ export class ClaudeAnalyzer {
     return this.client !== undefined;
   }
 
-  async analyze(tender: Tender, missionText: string): Promise<ModelAnalysis> {
+  async analyze(tender: Tender, missionText: string, documents: DocumentText[] = []): Promise<ModelAnalysis> {
     if (!this.client) throw new AnalyzerUnavailableError('ANTHROPIC_API_KEY is not set');
     try {
       // create(), not parse(): parse() validates every text block before the
@@ -69,7 +70,7 @@ export class ClaudeAnalyzer {
         betas: ['server-side-fallback-2026-07-01'],
         fallbacks: 'default',
         system: ANALYSIS_SYSTEM_PROMPT,
-        messages: [{ role: 'user', content: buildOfferPrompt(tender, missionText) }],
+        messages: [{ role: 'user', content: buildOfferPrompt(tender, missionText, documents) }],
       });
       return {
         result: interpretResponse(response),

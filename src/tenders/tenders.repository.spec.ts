@@ -34,8 +34,8 @@ describe('TendersRepository — Claude analyses', () => {
     dir = mkdtempSync(join(tmpdir(), 'tenders-repo-'));
     repository = new TendersRepository({ get: (key: string) => (key === 'DATA_DIR' ? dir : undefined) } as ConfigService);
     repository.upsertMany([offer('a'), offer('b'), offer('c'), offer('x', 'bpifrance')]);
-    repository.saveAnalysis('partenaire-gc', 'a', { kind: 'relevant', analysis }, 'test-model', 'Texte de mission');
-    repository.saveAnalysis('partenaire-gc', 'b', { kind: 'not_relevant' }, 'test-model', 'Texte à ne pas garder');
+    repository.saveAnalysis('partenaire-gc', 'a', { kind: 'relevant', analysis }, 'test-model', 'Texte de mission', []);
+    repository.saveAnalysis('partenaire-gc', 'b', { kind: 'not_relevant' }, 'test-model', 'Texte à ne pas garder', []);
   });
 
   after(() => {
@@ -77,8 +77,8 @@ describe('TendersRepository — Claude analyses', () => {
   });
 
   it('replaces an analysis when the same offer is analysed again, and clears its failures', () => {
-    repository.saveAnalysis('partenaire-gc', 'c', { kind: 'refused', category: 'cyber' }, 'test-model', null);
-    repository.saveAnalysis('partenaire-gc', 'c', { kind: 'relevant', analysis }, 'test-model', 'Nouveau texte');
+    repository.saveAnalysis('partenaire-gc', 'c', { kind: 'refused', category: 'cyber' }, 'test-model', null, []);
+    repository.saveAnalysis('partenaire-gc', 'c', { kind: 'relevant', analysis }, 'test-model', 'Nouveau texte', []);
     const row = repository.find({ relevant: true }).rows.find((r) => r.external_id === 'c');
     assert.equal(row?.analysis?.outcome, 'relevant');
     assert.equal(row?.analysis?.missionText, 'Nouveau texte');
@@ -105,9 +105,9 @@ describe('TendersRepository — offers emailed to the AO inbox', () => {
         withDeadline('not-relevant', '2026-11-25T10:00:00.000Z'),
       ]);
       for (const id of ['late', 'soon', 'no-deadline', 'past']) {
-        repository.saveAnalysis('partenaire-gc', id, { kind: 'relevant', analysis }, 'test-model', 'Texte');
+        repository.saveAnalysis('partenaire-gc', id, { kind: 'relevant', analysis }, 'test-model', 'Texte', []);
       }
-      repository.saveAnalysis('partenaire-gc', 'not-relevant', { kind: 'not_relevant' }, 'test-model', null);
+      repository.saveAnalysis('partenaire-gc', 'not-relevant', { kind: 'not_relevant' }, 'test-model', null, []);
       const now = '2026-11-12T10:00:00.000Z';
 
       assert.deepEqual(repository.relevantNotEmailed('partenaire-gc', now, 10).map((r) => r.external_id), ['soon', 'late', 'no-deadline']);
@@ -162,6 +162,29 @@ describe('TendersRepository — operator alerts', () => {
       assert.equal(repository.alertLastSentAt('claude-credits'), null);
       repository.clearAlert('session:partenaire-gc');
       assert.equal(repository.alertLastSentAt('session:partenaire-gc'), null);
+    } finally {
+      repository.onModuleDestroy();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('TendersRepository — offer documents', () => {
+  it('keeps the document links of relevant offers only, in page order, replaced by a new analysis', () => {
+    const docs = [
+      { name: 'cdc.pdf', url: 'https://partenaire-gc.com/system/files/cdc.pdf' },
+      { name: 'annexe.docx', url: 'https://partenaire-gc.com/system/files/annexe.docx' },
+    ];
+    const dir = mkdtempSync(join(tmpdir(), 'tenders-docs-'));
+    const repository = new TendersRepository({ get: (key: string) => (key === 'DATA_DIR' ? dir : undefined) } as ConfigService);
+    try {
+      repository.upsertMany([offer('d1'), offer('d2')]);
+      repository.saveAnalysis('partenaire-gc', 'd1', { kind: 'relevant', analysis }, 'test-model', 'Texte', docs);
+      repository.saveAnalysis('partenaire-gc', 'd2', { kind: 'not_relevant' }, 'test-model', null, docs);
+      assert.deepEqual(repository.documentLinks('partenaire-gc', 'd1'), docs);
+      assert.deepEqual(repository.documentLinks('partenaire-gc', 'd2'), []);
+      repository.saveAnalysis('partenaire-gc', 'd1', { kind: 'refused', category: null }, 'test-model', null, docs);
+      assert.deepEqual(repository.documentLinks('partenaire-gc', 'd1'), []);
     } finally {
       repository.onModuleDestroy();
       rmSync(dir, { recursive: true, force: true });

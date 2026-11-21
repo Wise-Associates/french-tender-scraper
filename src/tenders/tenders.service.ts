@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { AnalysisOutcome } from '../analysis/offer-analysis';
+import { DocumentLink } from '../documents/offer-documents';
 import { Tender } from '../scrapers/tender.types';
 import { TendersRepository, TenderWithAnalysis } from './tenders.repository';
 
@@ -36,8 +37,8 @@ export class TendersService {
     return this.repository.recordAnalysisFailure(tender.site, tender.externalId, error);
   }
 
-  saveAnalysis(tender: Tender, outcome: AnalysisOutcome, model: string, missionText: string | null): void {
-    this.repository.saveAnalysis(tender.site, tender.externalId, outcome, model, missionText);
+  saveAnalysis(tender: Tender, outcome: AnalysisOutcome, model: string, missionText: string | null, documents: DocumentLink[]): void {
+    this.repository.saveAnalysis(tender.site, tender.externalId, outcome, model, missionText, documents);
   }
 
   stats(): { total: number; bySite: { site: string; count: number }[] } {

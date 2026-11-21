@@ -76,7 +76,7 @@ export class ScrapingService {
         this.alerts.resolve(sessionAlertKind(scraper.site));
         if (scraper.manualSession) await this.reportSession(scraper, 'ok', new Date());
         if (analysis) await this.reportClaudeCredits(analysis);
-        const aoEmails = analysis ? await this.emailRelevantOffers(scraper.site) : undefined;
+        const aoEmails = analysis ? await this.emailRelevantOffers(scraper) : undefined;
         const result: ScrapeResult = {
           site: scraper.site,
           scrapedAt: new Date().toISOString(),
@@ -144,15 +144,16 @@ export class ScrapingService {
    * in the run result, never a scrape failure: the offers stay stored and the
    * next run or `npm run ao:send` sends them.
    */
-  private async emailRelevantOffers(site: string): Promise<{ sent: number; refused: number; error?: string }> {
+  private async emailRelevantOffers(scraper: BaseScraper): Promise<{ sent: number; refused: number; error?: string }> {
     try {
       return await sendRelevantOffers(
         this.repository,
         parseMailConfig(process.env),
-        site,
+        scraper.site,
         MAX_EMAILS_PER_SEND,
         process.env.DATA_DIR || './data',
         (message) => this.logger.log(message),
+        scraper.documentsForEmail?.bind(scraper),
       );
     } catch (err) {
       const error = err instanceof Error ? err.message : String(err);

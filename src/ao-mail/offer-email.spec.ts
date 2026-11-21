@@ -81,6 +81,17 @@ describe('renderOfferEmail', () => {
     assert.match(bare.text, /Pas de description enregistrée/);
   });
 
+  it('lists the attached documents and the others with the reason, escaped in the HTML version', () => {
+    const withDocuments = renderOfferEmail(offer, {
+      attached: ['cdc.pdf', 'annexe.docx'],
+      notAttached: [{ name: 'matrice<1>.xlsx', reason: 'tableur, à télécharger sur l’offre en ligne' }],
+    });
+    assert.ok(withDocuments.text.includes('Documents joints : cdc.pdf, annexe.docx'));
+    assert.ok(withDocuments.text.includes('Documents non joints : matrice<1>.xlsx (tableur, à télécharger sur l’offre en ligne)'));
+    assert.ok(withDocuments.html.includes('matrice&lt;1&gt;.xlsx'));
+    assert.doesNotMatch(email.text, /Documents/, 'no document lines without documents');
+  });
+
   it('shortens a very long subject', () => {
     assert.equal(renderOfferEmail({ ...offer, title: 'x'.repeat(300) }).subject.length, 180);
   });
