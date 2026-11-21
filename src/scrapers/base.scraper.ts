@@ -4,6 +4,8 @@ import { Page, Response } from 'playwright';
 import { mkdirSync, writeFileSync } from 'fs';
 import { createHash } from 'crypto';
 import { join } from 'path';
+import { DocumentLink } from '../documents/offer-documents';
+import { EmailDocuments } from '../documents/read-documents';
 import { BrowserService } from './browser.service';
 import { OfferDetails, ScrapeFilters, SiteKey, Tender } from './tender.types';
 
@@ -81,6 +83,9 @@ export abstract class BaseScraper {
 
   /** Implemented by sites whose detail pages are analysed by Claude (see OfferAnalysisService). */
   fetchDetails?(tenders: Tender[]): Promise<OfferDetails[]>;
+
+  /** Implemented by sites whose offers have documents: downloads them for the AO inbox email (ADR 0007). */
+  documentsForEmail?(links: DocumentLink[]): Promise<EmailDocuments>;
 
   isEnabled(): boolean {
     const key = this.site.replace(/-/g, '').toUpperCase();

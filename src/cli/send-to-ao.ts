@@ -16,6 +16,8 @@ import { ConfigService } from '@nestjs/config';
 import { parseMailConfig } from '../ao-mail/ao-mailer';
 import { renderOfferEmail } from '../ao-mail/offer-email';
 import { MAX_EMAILS_PER_SEND, sendRelevantOffers } from '../ao-mail/send-offers';
+import { BrowserService } from '../scrapers/browser.service';
+import { PartenaireGcScraper } from '../scrapers/partenaire-gc.scraper';
 import { TendersRepository } from '../tenders/tenders.repository';
 
 const SITE = 'partenaire-gc';
@@ -52,21 +54,33 @@ async function main(): Promise<void> {
     if (dryRun) {
       for (const offer of offers) {
         const email = renderOfferEmail(offer);
+        const documents = repository.documentLinks(offer.site, offer.external_id).map((d) => d.name);
         console.log(`\n=== ${email.subject}\n\n${email.text}`);
+        if (documents.length) console.log(`\nDocuments (downloaded and attached when sent): ${documents.join(', ')}`);
       }
-      console.log(`\nDry run: ${offers.length} offer(s) shown, nothing sent.`);
+      console.log(`\nDry run: ${offers.length} offer(s) shown, nothing sent or downloaded.`);
       return;
     }
 
-    const { refused } = await sendRelevantOffers(
-      repository,
-      parseMailConfig(process.env),
-      SITE,
-      limit,
-      process.env.DATA_DIR || './data',
-      (message) => console.log(message),
-    );
-    if (refused > 0) process.exitCode = 1;
+    // The documents are downloaded with the saved session, through the API's own browser code (same session
+    // file and user agent), without starting the API and its scheduler. Chromium starts only if an offer has documents.
+    const config = { get: (key: string) => process.env[key] } as ConfigService;
+    const browser = new BrowserService(config);
+    const scraper = new PartenaireGcScraper(browser, config);
+    try {
+      const { refused } = await sendRelevantOffers(
+        repository,
+        parseMailConfig(process.env),
+        SITE,
+        limit,
+        process.env.DATA_DIR || './data',
+        (message) => console.log(message),
+        (links) => scraper.documentsForEmail(links),
+      );
+      if (refused > 0) process.exitCode = 1;
+    } finally {
+      await browser.onModuleDestroy();
+    }
   } finally {
     repository.onModuleDestroy();
   }

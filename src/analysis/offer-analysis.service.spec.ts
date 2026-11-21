@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { ConfigService } from '@nestjs/config';
 import { BaseScraper, SessionMissingError } from '../scrapers/base.scraper';
+import { DocumentLink, DocumentText } from '../documents/offer-documents';
 import { OfferDetails, Tender } from '../scrapers/tender.types';
 import { TendersService } from '../tenders/tenders.service';
 import { ClaudeAnalyzer } from './claude-analyzer.service';
@@ -32,7 +33,8 @@ function setup(options: {
   openaiKeySet?: boolean;
   openaiAnalyze?: (tender: Tender) => AnalysisResult | Error;
 }) {
-  const saved: { id: string; outcome: AnalysisOutcome; model: string; missionText: string | null }[] = [];
+  const saved: { id: string; outcome: AnalysisOutcome; model: string; missionText: string | null; documents: DocumentLink[] }[] = [];
+  const documentsSent: Record<string, DocumentText[]> = {};
   const failures: Record<string, number> = { ...options.previousAttempts };
   const fetched: string[] = [];
   const claudeCalls: string[] = [];
@@ -41,14 +43,15 @@ function setup(options: {
   const tenders = {
     withoutAnalysis: (_site: string, list: Tender[], maxAttempts: number) =>
       list.filter((t) => !analysed.has(t.externalId) && (failures[t.externalId] ?? 0) < maxAttempts),
-    saveAnalysis: (tender: Tender, outcome: AnalysisOutcome, model: string, missionText: string | null) =>
-      saved.push({ id: tender.externalId, outcome, model, missionText }),
+    saveAnalysis: (tender: Tender, outcome: AnalysisOutcome, model: string, missionText: string | null, documents: DocumentLink[]) =>
+      saved.push({ id: tender.externalId, outcome, model, missionText, documents }),
     recordAnalysisFailure: (tender: Tender) => (failures[tender.externalId] = (failures[tender.externalId] ?? 0) + 1),
   } as unknown as TendersService;
   const analyzer = {
     enabled: options.apiKeySet ?? true,
-    analyze: async (tender: Tender) => {
+    analyze: async (tender: Tender, _text: string, documents: DocumentText[]) => {
       claudeCalls.push(tender.externalId);
+      documentsSent[tender.externalId] = documents;
       const result = options.analyze ? options.analyze(tender) : relevant;
       if (result instanceof Error) throw result;
       return { result, model: 'served-model', inputTokens: 100, outputTokens: 10 };
@@ -70,12 +73,12 @@ function setup(options: {
     displayName: 'Test',
     fetchDetails: async (list: Tender[]) => {
       fetched.push(...list.map((t) => t.externalId));
-      const details = options.details ? options.details(list) : list.map((tender) => ({ tender, text: `Contact : rh@acme.test — Développeur Java, ${tender.title}` }));
+      const details = options.details ? options.details(list) : list.map((tender) => ({ tender, text: `Contact : rh@acme.test — Développeur Java, ${tender.title}`, documents: [] }));
       if (details instanceof Error) throw details;
       return details;
     },
   } as unknown as BaseScraper;
-  return { service: new OfferAnalysisService(analyzer, openai, tenders, config), scraper, saved, failures, fetched, claudeCalls, openaiCalls };
+  return { service: new OfferAnalysisService(analyzer, openai, tenders, config), scraper, saved, failures, fetched, claudeCalls, openaiCalls, documentsSent };
 }
 
 describe('OfferAnalysisService', () => {
@@ -119,7 +122,7 @@ describe('OfferAnalysisService', () => {
     const calls: string[] = [];
     const { service, scraper, saved } = setup({
       details: (list) =>
-        list.map((tender) => ({ tender, text: tender.externalId === 'a' ? 'Comptabilité et trésorerie' : 'Équipe agile, développeur Java' })),
+        list.map((tender) => ({ tender, text: tender.externalId === 'a' ? 'Comptabilité et trésorerie' : 'Équipe agile, développeur Java', documents: [] })),
       analyze: (tender) => {
         calls.push(tender.externalId);
         return relevant;
@@ -135,11 +138,31 @@ describe('OfferAnalysisService', () => {
     assert.equal(summary?.inputTokens, 100);
   });
 
+  it('reads the documents: keyword filter and Claude see their text, only their links are kept, for relevant offers', async () => {
+    // b's document was left out for good (unreadable): b is judged on its page, which has no IT keyword.
+    const cdc = { name: 'cdc.pdf', url: 'https://partenaire-gc.com/system/files/cdc.pdf' };
+    const { service, scraper, saved, claudeCalls, documentsSent } = setup({
+      details: (list) =>
+        list.map((tender) =>
+          tender.externalId === 'a'
+            ? { tender, text: 'Voir le cahier des charges joint.', documents: [{ ...cdc, text: 'Mission de développeur Java' }] }
+            : { tender, text: 'Voir le cahier des charges joint.', documents: [{ ...cdc, problem: 'illisible', failure: 'final' as const }] },
+        ),
+    });
+    await service.analyzeNew(scraper, [offer('a'), offer('b')]);
+    assert.deepEqual(claudeCalls, ['a'], 'b has no IT keyword and no readable document');
+    assert.deepEqual(documentsSent.a, [{ ...cdc, text: 'Mission de développeur Java' }]);
+    assert.deepEqual(saved.map((s) => [s.id, s.documents]), [
+      ['a', [cdc]],
+      ['b', []],
+    ]);
+  });
+
   it('counts ANALYSIS_MAX_PER_RUN on offers that passed the filter; 0 runs the filter only', async () => {
     const calls: string[] = [];
     const { service, scraper, saved } = setup({
       maxPerRun: '0',
-      details: (list) => list.map((tender) => ({ tender, text: tender.externalId === 'a' ? 'Juridique' : 'Data engineer' })),
+      details: (list) => list.map((tender) => ({ tender, text: tender.externalId === 'a' ? 'Juridique' : 'Data engineer', documents: [] })),
       analyze: (tender) => {
         calls.push(tender.externalId);
         return relevant;
@@ -162,7 +185,7 @@ describe('OfferAnalysisService', () => {
   it('counts offer problems as attempts and sets the offer aside at the limit', async () => {
     const { service, scraper, saved, failures } = setup({
       previousAttempts: { b: MAX_ATTEMPTS_PER_OFFER - 1 },
-      details: (list) => list.map((tender) => (tender.externalId === 'a' ? { tender, error: 'No mission description', offerProblem: true } : { tender, text: 'Développeur Java' })),
+      details: (list) => list.map((tender) => (tender.externalId === 'a' ? { tender, error: 'No mission description', offerProblem: true } : { tender, text: 'Développeur Java', documents: [] })),
       analyze: () => ({ kind: 'unusable', reason: 'stop_reason "max_tokens"' }),
     });
     const summary = await service.analyzeNew(scraper, [offer('a'), offer('b')]);
@@ -181,7 +204,7 @@ describe('OfferAnalysisService', () => {
 
   it('does not count site or API outages against the offer', async () => {
     const { service, scraper, failures } = setup({
-      details: (list) => list.map((tender) => (tender.externalId === 'a' ? { tender, error: 'HTTP 503', offerProblem: false } : { tender, text: 'Développeur Java' })),
+      details: (list) => list.map((tender) => (tender.externalId === 'a' ? { tender, error: 'HTTP 503', offerProblem: false } : { tender, text: 'Développeur Java', documents: [] })),
       analyze: () => new Error('Request timed out'),
     });
     const summary = await service.analyzeNew(scraper, [offer('a'), offer('b')]);

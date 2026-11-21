@@ -33,6 +33,7 @@ src/
 ├── cli/login-session.ts  # manual login for sites whose login form is not automated
 ├── tenders/            # SQLite storage (better-sqlite3), REST search API
 ├── analysis/           # Claude analysis of offer details (classification + extraction), OpenAI fallback
+├── documents/          # offer documents: links, download with the session, PDF/Word text, email attachments
 ├── alerts/             # emails to the operator (expired session, Claude credit problem)
 └── scrapers/
     ├── browser.service.ts     # Playwright browser + per-site persistent sessions
@@ -146,8 +147,10 @@ use the site's own filters instead, set `PARTENAIREGC_SEARCH_URL` to a
 ## Claude analysis of offers (Partenaire GC)
 
 After each Partenaire GC scrape, every offer **not analysed yet** is opened
-(its detail page) and sent once to Claude (`claude-sonnet-5-5`), which says
-whether it belongs to one of these categories and extracts its key details:
+(its detail page, with the documents of its « Documents » block: cahier des
+charges, annexes — see below) and sent once to Claude (`claude-sonnet-5-5`),
+which says whether it belongs to one of these categories and extracts its key
+details:
 
 | Category key | Covers |
 |---|---|
@@ -160,7 +163,7 @@ deliberately **not** matched. The list and its wording live in
 `src/analysis/offer-analysis.ts` (`OFFER_CATEGORIES`).
 
 Before Claude, a **free keyword filter** (`src/analysis/it-keywords.ts`) reads
-the title and mission text: an offer mentioning none of the IT, software
+the title, mission text and document text: an offer mentioning none of the IT, software
 development, SaaS, agile/IT steering or data/AI terms of the list is set aside
 without calling Claude (recorded as `not_relevant`, model `keyword-filter`).
 The list favours recall — Claude makes the precise decision. After changing
@@ -173,7 +176,7 @@ set aside (support, network, accounting…), all correctly.
 - **Not relevant** offers keep only the outcome (no details) — this prevents
   sending them to Claude again.
 - **Declined** by Claude (`refused`): recorded once, not retried.
-- **Failures tied to the offer** (no mission description, unusable answer):
+- **Failures tied to the offer** (no mission description and no readable document, unusable answer):
   counted in `tender_analysis_failures`; after 3 attempts the offer is set
   aside (logged) — delete its row there to try again.
 - **Outages** (site or API down, timeouts): nothing counted, retried on the
@@ -191,6 +194,23 @@ curl 'localhost:3000/api/tenders?relevant=false'       # everything else
 ```
 
 `limit` must be between 1 and 200 (default 50); page with `offset`.
+
+### Offer documents
+
+The documents linked from a detail page (only `partenaire-gc.com/system/files/…`,
+5 at most) are downloaded with the session and read **in memory**: PDF with
+`unpdf`, Word (.docx) with `fflate`. Their text (contact details masked, 30,000
+characters at most) goes to the keyword filter and to the model with the
+mission text; a page that only says « see the attached cahier des charges » is
+analysed from its documents. Each file is parsed in a short-lived child
+process (20 s, killed first if memory runs out), so a malformed or hostile
+file cannot stop the API. Only their links are stored (`tender_documents`,
+relevant offers only), never their content. Spreadsheets and CV templates to
+fill (« matrice CV », « modèle CV ») are neither downloaded nor analysed: their
+sample content would pass for the offer's requirements. Other formats (.doc,
+.odt…) are attached to the email but not analysed. A document that cannot be
+read is logged and the offer is analysed without it. Rationale and limits:
+[docs/adr/0007-offer-documents.md](docs/adr/0007-offer-documents.md).
 
 > ⚠️ The API has **no authentication** and now returns the mission texts of
 > the paid subscriber area: keep port 3000 reachable from your machine only
@@ -265,6 +285,13 @@ npm run build
 npm run ao:send -- --limit 1 --dry-run   # prints the email that would be sent
 npm run ao:send -- --limit 1             # sends it
 ```
+
+Each email carries the offer's documents (downloaded again with the session
+when it is sent): PDF, Word, ODT, RTF and PowerPoint files, 10 MB in all, listed
+under « Documents joints ». Spreadsheets, CV templates, files over the limit and
+documents that cannot be downloaded (expired session included) are listed under
+« Documents non joints » with the reason, and the offer is sent anyway.
+`--dry-run` names the documents without downloading them.
 
 Most urgent deadline first; offers whose deadline has passed are skipped, and
 only partenaire-gc.com links are put in the email. An offer is recorded in

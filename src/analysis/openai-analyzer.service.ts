@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { z } from 'zod';
+import { DocumentText } from '../documents/offer-documents';
 import { Tender } from '../scrapers/tender.types';
 import { AnalyzerUnavailableError, ModelAnalysis } from './model-analysis';
 import { ANALYSIS_SYSTEM_PROMPT, buildOfferPrompt, interpretOpenAiResponse, OfferAnalysisSchema } from './offer-analysis';
@@ -78,7 +79,7 @@ export class OpenAiAnalyzer {
     return this.apiKey !== undefined;
   }
 
-  async analyze(tender: Tender, missionText: string): Promise<ModelAnalysis> {
+  async analyze(tender: Tender, missionText: string, documents: DocumentText[] = []): Promise<ModelAnalysis> {
     if (!this.apiKey) throw new AnalyzerUnavailableError('OPENAI_API_KEY is not set');
     const response = await fetch(CHAT_COMPLETIONS_URL, {
       method: 'POST',
@@ -87,7 +88,7 @@ export class OpenAiAnalyzer {
         model: this.model,
         messages: [
           { role: 'system', content: ANALYSIS_SYSTEM_PROMPT },
-          { role: 'user', content: buildOfferPrompt(tender, missionText) },
+          { role: 'user', content: buildOfferPrompt(tender, missionText, documents) },
         ],
         response_format: RESPONSE_FORMAT,
         // Covers the reasoning tokens of reasoning models plus the short JSON answer (same budget as Claude).

@@ -38,7 +38,15 @@ export function frenchDeadline(iso: string): string {
   return `${day} à ${time}`;
 }
 
-export function renderOfferEmail(offer: TenderWithAnalysis): RenderedEmail {
+/** What the email says about the offer's documents (ADR 0007): attached files, and the others with the reason. */
+export interface DocumentsNote {
+  attached: string[];
+  notAttached: { name: string; reason: string }[];
+}
+
+const NO_DOCUMENTS: DocumentsNote = { attached: [], notAttached: [] };
+
+export function renderOfferEmail(offer: TenderWithAnalysis, documents: DocumentsNote = NO_DOCUMENTS): RenderedEmail {
   const client = offer.buyer ?? 'Client non précisé';
   const url = siteUrl(offer.site, offer.url);
   const skills = offer.analysis?.skills ?? [];
@@ -49,6 +57,10 @@ export function renderOfferEmail(offer: TenderWithAnalysis): RenderedEmail {
     ...(offer.description ? [{ label: 'Précisions', value: offer.description }] : []),
     ...(skills.length ? [{ label: 'Compétences', value: skills.join(', ') }] : []),
     ...(offer.deadline_at ? [{ label: 'Date limite de réponse', value: frenchDeadline(offer.deadline_at) }] : []),
+    ...(documents.attached.length ? [{ label: 'Documents joints', value: documents.attached.join(', ') }] : []),
+    ...(documents.notAttached.length
+      ? [{ label: 'Documents non joints', value: documents.notAttached.map((d) => `${d.name} (${d.reason})`).join(' ; ') }]
+      : []),
     { label: 'Référence', value: `${offer.site}:${offer.external_id}` },
     url ? { label: 'Offre en ligne', value: url, href: url } : { label: 'Offre en ligne', value: 'lien indisponible' },
   ];

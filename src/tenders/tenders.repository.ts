@@ -4,6 +4,7 @@ import Database from 'better-sqlite3';
 import { mkdirSync } from 'fs';
 import { join } from 'path';
 import { AnalysisOutcome } from '../analysis/offer-analysis';
+import { DocumentLink } from '../documents/offer-documents';
 import { Tender } from '../scrapers/tender.types';
 
 export interface TenderRow {
@@ -158,6 +159,18 @@ export class TendersRepository implements OnModuleDestroy {
         PRIMARY KEY (site, external_id)
       );
 
+      -- Documents linked from a relevant offer's detail page (cahier des
+      -- charges…): name and address only, never the content. They are
+      -- downloaded again with the session when the offer is emailed (ADR 0007).
+      CREATE TABLE IF NOT EXISTS tender_documents (
+        site        TEXT NOT NULL,
+        external_id TEXT NOT NULL,
+        position    INTEGER NOT NULL,
+        name        TEXT NOT NULL,
+        url         TEXT NOT NULL,
+        PRIMARY KEY (site, external_id, position)
+      );
+
       -- Operator alerts in progress (expired session, Claude credits): when
       -- the last email was sent, so a reminder goes out at most once a day.
       -- The row is deleted once the problem is gone (ADR 0005).
@@ -250,10 +263,25 @@ export class TendersRepository implements OnModuleDestroy {
     return row.attempts;
   }
 
-  /** Idempotent: analysing the same offer again replaces its previous analysis. */
-  saveAnalysis(site: string, externalId: string, outcome: AnalysisOutcome, model: string, missionText: string | null): void {
+  /**
+   * Idempotent: analysing the same offer again replaces its previous analysis
+   * and its document links. `documents` are kept for relevant offers only,
+   * like the mission text.
+   */
+  saveAnalysis(
+    site: string,
+    externalId: string,
+    outcome: AnalysisOutcome,
+    model: string,
+    missionText: string | null,
+    documents: DocumentLink[],
+  ): void {
     const analysis = outcome.kind === 'relevant' ? outcome.analysis : null;
     const clearFailures = this.db.prepare('DELETE FROM tender_analysis_failures WHERE site = ? AND external_id = ?');
+    const clearDocuments = this.db.prepare('DELETE FROM tender_documents WHERE site = ? AND external_id = ?');
+    const insertDocument = this.db.prepare(
+      'INSERT INTO tender_documents (site, external_id, position, name, url) VALUES (?, ?, ?, ?, ?)',
+    );
     const insert = this.db
       .prepare(
         `INSERT INTO tender_analyses (site, external_id, outcome, categories, summary, skills, seniority, duration,
@@ -284,7 +312,16 @@ export class TendersRepository implements OnModuleDestroy {
     this.db.transaction(() => {
       insert.run(values);
       clearFailures.run(site, externalId);
+      clearDocuments.run(site, externalId);
+      if (analysis) documents.forEach((document, position) => insertDocument.run(site, externalId, position, document.name, document.url));
     })();
+  }
+
+  /** Documents of an analysed offer, in the order of its page. */
+  documentLinks(site: string, externalId: string): DocumentLink[] {
+    return this.db
+      .prepare('SELECT name, url FROM tender_documents WHERE site = ? AND external_id = ? ORDER BY position')
+      .all(site, externalId) as DocumentLink[];
   }
 
   /** Insert new tenders, refresh last_seen_at for known ones. Returns ids of new rows. */

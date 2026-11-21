@@ -1,3 +1,5 @@
+import { DocumentText } from '../documents/offer-documents';
+
 export const SITE_KEYS = [
   'maximilien',
   'aw-solutions',
@@ -43,13 +45,14 @@ export interface ScrapeResult {
 }
 
 /**
- * The mission text read from an offer's detail page, or why it could not be
- * read. `offerProblem`: the page itself is unusable (no description, foreign
- * URL…) and counts as a failed attempt for the offer; otherwise (network,
- * site down) it does not.
+ * The mission text read from an offer's detail page, with the text of its
+ * documents (cahier des charges…, ADR 0007), or why it could not be read.
+ * `offerProblem`: the page itself is unusable (no description, foreign URL…)
+ * and counts as a failed attempt for the offer; otherwise (network, site
+ * down) it does not.
  */
 export type OfferDetails =
-  | { tender: Tender; text: string }
+  | { tender: Tender; text: string; documents: DocumentText[] }
   | { tender: Tender; error: string; offerProblem: boolean };
 
 export interface AnalysisSummary {

@@ -9,6 +9,14 @@ export function sessionFilePath(sessionsDir: string, site: string): string {
   return join(sessionsDir, `${site}.json`);
 }
 
+/** The browser's user agent, also sent with document downloads (src/documents) so they look like the pages' requests. */
+export function scraperUserAgent(config: ConfigService): string {
+  return (
+    config.get<string>('SCRAPER_USER_AGENT') ??
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
+  );
+}
+
 /**
  * Owns the headless browser and one persistent BrowserContext per site.
  * Session cookies/localStorage are saved to disk (Playwright storageState)
@@ -35,9 +43,7 @@ export class BrowserService implements OnModuleDestroy {
       locale: 'fr-FR',
       timezoneId: 'Europe/Paris',
       viewport: { width: 1440, height: 900 },
-      userAgent:
-        this.config.get<string>('SCRAPER_USER_AGENT') ??
-        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+      userAgent: scraperUserAgent(this.config),
       ignoreHTTPSErrors: true,
       ...(existsSync(sessionPath) ? { storageState: sessionPath } : {}),
     });

@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { DocumentText, documentsText } from '../documents/offer-documents';
 import { BaseScraper, SessionMissingError } from '../scrapers/base.scraper';
 import { AnalysisSummary, OfferDetails, Tender } from '../scrapers/tender.types';
 import { TendersService } from '../tenders/tenders.service';
@@ -19,8 +20,9 @@ export const MAX_DETAIL_PAGES_PER_RUN = 40;
 export const KEYWORD_FILTER_MODEL = 'keyword-filter';
 
 /**
- * After a scrape: reads the detail page of each offer not analysed yet, sets
- * aside for free the offers with no IT keyword (it-keywords.ts) and has Claude
+ * After a scrape: reads the detail page of each offer not analysed yet, with
+ * the text of its documents (ADR 0007), sets aside for free the offers with no
+ * IT keyword (it-keywords.ts) and has Claude
  * classify the others, at most ANALYSIS_MAX_PER_RUN per run. Each offer is
  * analysed once. When Claude refuses for a credit problem, the rest of the
  * run goes to the OpenAI fallback if configured (ADR 0004). Failures tied to the offer
@@ -88,9 +90,9 @@ export class OfferAnalysisService {
         }
         continue;
       }
-      const keywords = matchedItKeywords(`${detail.tender.title}\n${detail.text}`);
+      const keywords = matchedItKeywords(`${detail.tender.title}\n${detail.text}\n${documentsText(detail.documents)}`);
       if (keywords.length === 0) {
-        this.tenders.saveAnalysis(detail.tender, { kind: 'not_relevant' }, KEYWORD_FILTER_MODEL, null);
+        this.tenders.saveAnalysis(detail.tender, { kind: 'not_relevant' }, KEYWORD_FILTER_MODEL, null, []);
         summary.filteredOut += 1;
         this.logger.log(`${idOf(detail.tender)}: no IT keyword, not sent to Claude`);
         continue;
@@ -103,7 +105,7 @@ export class OfferAnalysisService {
       claudeCalls += 1;
       this.logger.log(`${idOf(detail.tender)}: IT keywords (${keywords.slice(0, 5).join(', ')}) → Claude`);
       try {
-        const { result, model, inputTokens, outputTokens } = await this.analyzeOffer(detail.tender, detail.text, summary);
+        const { result, model, inputTokens, outputTokens } = await this.analyzeOffer(detail, summary);
         consecutiveApiErrors = 0;
         summary.inputTokens += inputTokens;
         summary.outputTokens += outputTokens;
@@ -111,7 +113,7 @@ export class OfferAnalysisService {
           this.recordFailure(detail.tender, `${model} answer unusable: ${result.reason}`, summary);
           continue;
         }
-        this.save(detail.tender, result, model, detail.text);
+        this.save(detail.tender, result, model, detail.text, detail.documents);
         summary.analyzed += 1;
         if (result.kind === 'relevant') summary.relevant += 1;
         else if (result.kind === 'not_relevant') summary.notRelevant += 1;
@@ -154,10 +156,13 @@ export class OfferAnalysisService {
    * The next run tries Claude again, so topping up the credits is enough to
    * come back to it.
    */
-  private async analyzeOffer(tender: Tender, missionText: string, summary: AnalysisSummary): Promise<ModelAnalysis> {
+  private async analyzeOffer(
+    { tender, text, documents }: { tender: Tender; text: string; documents: DocumentText[] },
+    summary: AnalysisSummary,
+  ): Promise<ModelAnalysis> {
     if (summary.claudeCreditProblem === undefined) {
       try {
-        return await this.claude.analyze(tender, missionText);
+        return await this.claude.analyze(tender, text, documents);
       } catch (err) {
         if (!(err instanceof ClaudeOutOfCreditsError)) throw err;
         summary.claudeCreditProblem = err.message;
@@ -167,16 +172,18 @@ export class OfferAnalysisService {
     }
     // Set before the call so a failing fallback still shows it was tried (answers: 0).
     summary.fallback ??= { model: this.openai.model, answers: 0 };
-    const analysis = await this.openai.analyze(tender, missionText);
+    const analysis = await this.openai.analyze(tender, text, documents);
     summary.fallback.answers += 1;
     return analysis;
   }
 
-  private save(tender: Tender, outcome: AnalysisOutcome, model: string, missionText: string): void {
+  /** Mission text and document links are kept for relevant offers only: they are emailed to the AO inbox. */
+  private save(tender: Tender, outcome: AnalysisOutcome, model: string, missionText: string, documents: DocumentText[]): void {
     if (outcome.kind === 'relevant') {
-      this.tenders.saveAnalysis(tender, { kind: 'relevant', analysis: maskAnalysis(outcome.analysis) }, model, maskContactDetails(missionText));
+      const links = documents.map(({ name, url }) => ({ name, url }));
+      this.tenders.saveAnalysis(tender, { kind: 'relevant', analysis: maskAnalysis(outcome.analysis) }, model, maskContactDetails(missionText), links);
     } else {
-      this.tenders.saveAnalysis(tender, outcome, model, null);
+      this.tenders.saveAnalysis(tender, outcome, model, null, []);
     }
   }
 

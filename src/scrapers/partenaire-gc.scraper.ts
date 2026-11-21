@@ -1,6 +1,10 @@
 import { Injectable } from '@nestjs/common';
-import { Page } from 'playwright';
+import { BrowserContext, Page } from 'playwright';
+import { DocumentSession } from '../documents/document-download';
+import { DocumentLink, documentLinks, documentsReadOutcome, documentsText } from '../documents/offer-documents';
+import { EmailDocuments, readDocumentsForAnalysis, readDocumentsForEmail } from '../documents/read-documents';
 import { BaseScraper, SessionMissingError } from './base.scraper';
+import { scraperUserAgent } from './browser.service';
 import { matchesKeywords, PARTENAIRE_GC_ORIGIN, PartenaireGcRow, toPartenaireGcTender } from './partenaire-gc.listing';
 import { OfferDetails, ScrapeFilters, Tender } from './tender.types';
 
@@ -12,6 +16,10 @@ const MAX_PAGES = 20;
 const MISSION_TEXT_SELECTOR = '.field--name-field-body-prive';
 /** Far above real offers; guards the Claude bill against a malformed page. */
 const MAX_MISSION_TEXT_LENGTH = 20_000;
+/** The « Documents » block of a detail page: one Drupal media link per file (`/system/files/document/…`). */
+const DOCUMENTS_SELECTOR = '.field--name-field-documents';
+/** A document refused while the session works: left out (the offer's other documents after it are not requested). */
+const REFUSED_WITH_SESSION = 'refusé par le site alors que la session est valide';
 
 /** The offer's detail page cannot be analysed as it is (counts as a failed attempt). */
 class OfferContentError extends Error {}
@@ -100,9 +108,11 @@ export class PartenaireGcScraper extends BaseScraper {
   }
 
   /**
-   * Reads the mission description of each offer's detail page, one page at a
-   * time with the usual delay. An offer that cannot be read is reported and
-   * left for the next run; a missing session stops the whole batch.
+   * Reads each offer's detail page, one page at a time with the usual delay:
+   * the mission description and the text of its documents (cahier des
+   * charges…, ADR 0007), downloaded with the session and read in memory. An
+   * offer that cannot be read is reported and left for the next run; a
+   * missing session stops the whole batch.
    */
   async fetchDetails(tenders: Tender[]): Promise<OfferDetails[]> {
     return this.withPage(async (page) => {
@@ -113,7 +123,27 @@ export class PartenaireGcScraper extends BaseScraper {
           if (new URL(tender.url).origin !== PARTENAIRE_GC_ORIGIN) throw new OfferContentError(`URL outside ${PARTENAIRE_GC_ORIGIN}`);
           await this.humanDelay();
           await this.openPage(page, tender.url);
-          details.push({ tender, text: await this.readMissionText(page) });
+          const text = await this.readMissionText(page);
+          const links = await this.readDocumentLinks(page);
+          let documents = await readDocumentsForAnalysis(links, this.documentSession(page.context()), () => this.humanDelay());
+          let outcome = documentsReadOutcome(documents);
+          if (outcome.kind === 'session') {
+            // The page was read logged in a moment ago: check the session before stopping the run for one refused
+            // file. openPage() stops the batch and raises the operator alert if the session has really expired.
+            await this.openPage(page, this.baseUrl);
+            documents = documents.map((d) => ('problem' in d && d.failure === 'session' ? { ...d, problem: REFUSED_WITH_SESSION, failure: 'final' } : d));
+            outcome = documentsReadOutcome(documents);
+          }
+          // Not an OfferContentError: the offer is read again next run, without counting an attempt.
+          if (outcome.kind === 'retry') throw new Error(`document ${outcome.name} not downloaded, retried next run — ${outcome.problem}`);
+          for (const document of documents) {
+            if ('problem' in document) this.logger.log(`${tender.externalId}: document ${document.name} left out — ${document.problem}`);
+          }
+          // Some offers only say « see the attached cahier des charges »: the documents are then the description.
+          if (!text && !documentsText(documents).trim()) {
+            throw new OfferContentError(`No mission description and no readable document on ${page.url()}`);
+          }
+          details.push({ tender, text, documents });
         } catch (err) {
           if (err instanceof SessionMissingError) throw err;
           details.push({
@@ -127,15 +157,39 @@ export class PartenaireGcScraper extends BaseScraper {
     });
   }
 
+  /**
+   * Downloads the offer's documents for its AO inbox email (ADR 0007), with
+   * the browser context's session, without opening a page: an expired session
+   * shows as refused downloads, listed in the email.
+   */
+  async documentsForEmail(links: DocumentLink[]): Promise<EmailDocuments> {
+    const context = await this.browser.context(this.site);
+    return readDocumentsForEmail(links, this.documentSession(context), () => this.humanDelay());
+  }
+
+  /** The mission description; '' when the page has none (the documents may carry it). */
   private async readMissionText(page: Page): Promise<string> {
     const body = page.locator(MISSION_TEXT_SELECTOR).first();
     const text = (await body.count()) > 0 ? (await body.innerText()).trim() : '';
-    if (!text) throw new OfferContentError(`No mission description on ${page.url()}`);
     // Not truncated: a partial description could be misclassified.
     if (text.length > MAX_MISSION_TEXT_LENGTH) {
       throw new OfferContentError(`Mission description of ${text.length} characters on ${page.url()} is too long to analyse`);
     }
     return text;
+  }
+
+  /** Links of the page's « Documents » block, filtered by documentLinks (site's private files only). */
+  private async readDocumentLinks(page: Page): Promise<DocumentLink[]> {
+    const hrefs = await page.$$eval(`${DOCUMENTS_SELECTOR} a[href]`, (anchors) => anchors.map((a) => a.getAttribute('href') ?? ''));
+    return documentLinks(hrefs, page.url(), PARTENAIRE_GC_ORIGIN);
+  }
+
+  /** Requests documents with the context's cookies for the document's URL (Playwright filters them by domain and path). */
+  private documentSession(context: BrowserContext): DocumentSession {
+    return {
+      cookie: async (url) => (await context.cookies(url)).map((c) => `${c.name}=${c.value}`).join('; '),
+      userAgent: scraperUserAgent(this.config),
+    };
   }
 
   private async openPage(page: Page, url: string): Promise<void> {
